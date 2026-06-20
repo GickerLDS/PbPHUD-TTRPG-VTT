@@ -2,6 +2,7 @@
 
 This is a new Node.js/MariaDB/React implementation for the legacy PBPHud map system. It is intentionally isolated from the Joomla/PHP webroot. No legacy files are required to be edited.
 
+
 ## What This First Version Includes
 
 - Express API with MariaDB connection pooling.
