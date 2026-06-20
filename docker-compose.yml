@@ -1,0 +1,22 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: pbphud-map-mariadb
+    restart: unless-stopped
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: "${DB_ROOT_PASSWORD:-pbphud-root-dev}"
+      MARIADB_DATABASE: "${DB_NAME:-pbphud_node}"
+      MARIADB_USER: "${DB_USER:-pbphud_node}"
+      MARIADB_PASSWORD: "${DB_PASSWORD:-pbphud-dev-password}"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mariadb-data:
