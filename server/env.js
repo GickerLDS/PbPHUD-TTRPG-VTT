@@ -19,6 +19,7 @@ export const config = {
     .map((origin) => origin.trim())
     .filter(Boolean),
   tileAssetDir: path.resolve(appRoot, process.env.TILE_ASSET_DIR || 'assets/tiles'),
+  integrationToken: process.env.PBPHUD_INTEGRATION_TOKEN || '',
   db: {
     host: process.env.DB_HOST || '127.0.0.1',
     port: intFromEnv('DB_PORT', 3306),

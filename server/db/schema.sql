@@ -14,6 +14,52 @@ CREATE TABLE IF NOT EXISTS maps (
   UNIQUE KEY uq_maps_group_map (group_name, map_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS vtt_campaigns (
+  provider VARCHAR(80) NOT NULL,
+  external_campaign_id VARCHAR(191) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  owner_user_id VARCHAR(191) NOT NULL,
+  owner_display_name VARCHAR(255) NOT NULL DEFAULT '',
+  payload_json LONGTEXT NULL,
+  imported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (provider, external_campaign_id),
+  KEY idx_vtt_campaigns_owner (owner_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS vtt_campaign_members (
+  provider VARCHAR(80) NOT NULL,
+  external_campaign_id VARCHAR(191) NOT NULL,
+  user_id VARCHAR(191) NOT NULL,
+  display_name VARCHAR(255) NOT NULL DEFAULT '',
+  role VARCHAR(32) NOT NULL,
+  imported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (provider, external_campaign_id, user_id),
+  KEY idx_vtt_campaign_members_user (user_id),
+  CONSTRAINT fk_vtt_campaign_members_campaign
+    FOREIGN KEY (provider, external_campaign_id) REFERENCES vtt_campaigns (provider, external_campaign_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS vtt_campaign_characters (
+  provider VARCHAR(80) NOT NULL,
+  external_campaign_id VARCHAR(191) NOT NULL,
+  external_character_id VARCHAR(191) NOT NULL,
+  owner_user_id VARCHAR(191) NOT NULL,
+  owner_display_name VARCHAR(255) NOT NULL DEFAULT '',
+  name VARCHAR(255) NOT NULL,
+  entity_json LONGTEXT NOT NULL,
+  payload_json LONGTEXT NULL,
+  imported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (provider, external_campaign_id, external_character_id),
+  KEY idx_vtt_campaign_characters_owner (owner_user_id),
+  CONSTRAINT fk_vtt_campaign_characters_campaign
+    FOREIGN KEY (provider, external_campaign_id) REFERENCES vtt_campaigns (provider, external_campaign_id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 ALTER TABLE maps ADD COLUMN IF NOT EXISTS grid_width SMALLINT UNSIGNED NULL AFTER grid_size;
 ALTER TABLE maps ADD COLUMN IF NOT EXISTS grid_height SMALLINT UNSIGNED NULL AFTER grid_width;
 UPDATE maps SET grid_width = grid_size WHERE grid_width IS NULL;

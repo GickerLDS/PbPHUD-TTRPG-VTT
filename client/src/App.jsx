@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createMap, getMap, listMaps, listTileAssets, patchTile, saveMap } from './api.js';
+import {
+  createMap,
+  getMap,
+  getViewerUserId,
+  listMaps,
+  listTileAssets,
+  patchEntity,
+  patchTile,
+  saveMap,
+  setViewerUserId
+} from './api.js';
 import { EntityPanel } from './components/EntityPanel.jsx';
 import { MapCanvas } from './components/MapCanvas.jsx';
 import { TilePalette } from './components/TilePalette.jsx';
@@ -46,6 +56,7 @@ function App() {
   const [panels, setPanels] = useState({ left: true, top: true, right: true });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [viewerUserId, setViewerUserIdState] = useState(() => getViewerUserId());
   const [newMap, setNewMap] = useState({ groupName: 'demo', mapName: 'map1', gridWidth: 40, gridHeight: 40 });
   const activeMapRef = useRef(null);
   const editorStateRef = useRef({
@@ -69,6 +80,33 @@ function App() {
     return entities.find((entity) => entity.id === selectedEntityId) ?? null;
   }, [entities, selectedEntityId]);
 
+  const permissions = activeMap?.permissions ?? {
+    canViewMap: true,
+    canCreateMaps: true,
+    canEditMaps: true,
+    canEditTiles: true,
+    canEditDrawings: true,
+    canEditBackground: true,
+    canManageEntities: true,
+    canUseMeasurements: true,
+    canControlEntities: true
+  };
+
+  const visibleTools = useMemo(() => {
+    return TOOLS.filter((item) => {
+      if (['paint', 'erase', 'move', 'line', 'square', 'circle'].includes(item.id)) {
+        return permissions.canEditMaps;
+      }
+      if (['measure', 'measure-square', 'measure-circle'].includes(item.id)) {
+        return permissions.canUseMeasurements;
+      }
+      if (item.id === 'entity') {
+        return permissions.canManageEntities || permissions.canControlEntities;
+      }
+      return true;
+    });
+  }, [permissions]);
+
   useEffect(() => {
     refreshMaps();
     listTileAssets()
@@ -78,6 +116,11 @@ function App() {
       })
       .catch(showError);
   }, []);
+
+  useEffect(() => {
+    if (visibleTools.some((item) => item.id === tool)) return;
+    setTool(visibleTools[0]?.id ?? 'entity');
+  }, [tool, visibleTools]);
 
   useEffect(() => {
     activeMapRef.current = activeMap;
@@ -157,6 +200,10 @@ function App() {
 
   async function handleCreateMap(event) {
     event.preventDefault();
+    if (!permissions.canCreateMaps) {
+      showError(new Error('Only the campaign owner can create maps.'));
+      return;
+    }
     try {
       const data = await createMap({
         ...newMap,
@@ -173,6 +220,7 @@ function App() {
   }
 
   function handlePlaceTile(payload) {
+    if (!permissions.canEditTiles) return;
     enqueueTilePatch(
       () => ({
         x: payload.x,
@@ -185,6 +233,7 @@ function App() {
   }
 
   function handleEraseTile({ x, y, editorLayer: targetLayer }) {
+    if (!permissions.canEditTiles) return;
     enqueueTilePatch(
       (currentMap) => {
         const topTile = getTopTileAt(currentMap.tiles, x, y, targetLayer);
@@ -203,6 +252,7 @@ function App() {
   }
 
   function handleMoveTile({ tile, toX, toY }) {
+    if (!permissions.canEditTiles) return;
     if (!tile || (tile.x === toX && tile.y === toY)) return;
 
     enqueueTilePatch(
@@ -228,6 +278,7 @@ function App() {
   }
 
   function handleAddDrawing(shape) {
+    if (!permissions.canEditDrawings) return;
     setDrawings((current) => [...current, shape]);
     setMessage(`Drew ${shape.type}`);
     setError('');
@@ -246,6 +297,10 @@ function App() {
   }
 
   function handleBackgroundFile(event) {
+    if (!permissions.canEditBackground) {
+      event.target.value = '';
+      return;
+    }
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -279,16 +334,19 @@ function App() {
   }
 
   function updateBackgroundImage(patch) {
+    if (!permissions.canEditBackground) return;
     setBackgroundImage((current) => ({ ...current, ...patch }));
   }
 
   function clearBackgroundImage() {
+    if (!permissions.canEditBackground) return;
     setBackgroundImage(defaultBackgroundImage);
     setMessage('Cleared background image');
     setError('');
   }
 
   function updateActiveMapSize(patch) {
+    if (!permissions.canEditMaps) return;
     setActiveMap((current) => {
       if (!current) return current;
       const next = {
@@ -302,6 +360,10 @@ function App() {
   }
 
   function handleAddEntity(entity) {
+    if (!permissions.canManageEntities) {
+      showError(new Error('Only the campaign owner can add entities.'));
+      return;
+    }
     const nextEntity = {
       ...entity,
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -316,6 +378,12 @@ function App() {
   }
 
   function handleUpdateEntity(id, patch) {
+    const entity = entities.find((item) => item.id === id);
+    if (!entity || !canControlEntity(entity, entities, viewerUserId, permissions)) {
+      showError(new Error('You can only control your own player entities.'));
+      return;
+    }
+
     setEntities((current) => current.map((entity) => {
       if (entity.id !== id) return entity;
       const next = { ...entity, ...patch };
@@ -323,9 +391,23 @@ function App() {
       if (next.hp > next.maxHp) next.hp = next.maxHp;
       return next;
     }));
+
+    if (activeMap && isEntityPatch(patch)) {
+      patchEntity(activeMap.groupName, activeMap.mapName, id, patch)
+        .then((data) => {
+          activeMapRef.current = data.map;
+          setActiveMap(data.map);
+          setError('');
+        })
+        .catch(showError);
+    }
   }
 
   function handleDeleteEntity(id) {
+    if (!permissions.canManageEntities) {
+      showError(new Error('Only the campaign owner can remove entities.'));
+      return;
+    }
     setEntities((current) => current.filter((entity) => entity.id !== id));
     if (selectedEntityId === id) {
       const nextEntity = entities.find((entity) => entity.id !== id);
@@ -348,10 +430,15 @@ function App() {
 
   async function handleSave() {
     if (!activeMap) return;
+    if (!permissions.canEditMaps) {
+      showError(new Error('Only the campaign owner can save map edits.'));
+      return;
+    }
     await saveCurrentMap(activeMap, false);
   }
 
   async function saveCurrentMap(map, quiet = false) {
+    if (!permissions.canEditMaps) return;
     const editorState = editorStateRef.current;
     try {
       const data = await saveMap(map.groupName, map.mapName, {
@@ -379,6 +466,7 @@ function App() {
   }
 
   function enqueueTilePatch(buildPayload, buildMessage) {
+    if (!permissions.canEditTiles) return;
     const targetMap = activeMapRef.current;
     if (!targetMap) return;
 
@@ -410,6 +498,19 @@ function App() {
           <p>Node.js + MariaDB + React prototype</p>
         </div>
         <div className="topbar-actions">
+          <label className="viewer-control">
+            <span>Viewer ID</span>
+            <input
+              value={viewerUserId}
+              onChange={(event) => {
+                const nextViewerUserId = event.target.value;
+                setViewerUserIdState(nextViewerUserId);
+                setViewerUserId(nextViewerUserId);
+              }}
+              onBlur={() => refreshMaps()}
+              placeholder="Chummer user id"
+            />
+          </label>
           <div className="panel-switches" aria-label="Panel visibility">
             <button
               type="button"
@@ -436,7 +537,7 @@ function App() {
               Tiles/Entities
             </button>
           </div>
-          <button onClick={handleSave} disabled={!activeMap}>Save</button>
+          <button onClick={handleSave} disabled={!activeMap || !permissions.canEditMaps}>Save</button>
         </div>
       </header>
 
@@ -448,6 +549,7 @@ function App() {
         ].filter(Boolean).join(' ')}
       >
         <nav className="sidebar">
+          {permissions.canCreateMaps && (
           <form className="create-form" onSubmit={handleCreateMap}>
             <strong>New Map</strong>
             <input
@@ -478,6 +580,7 @@ function App() {
             />
             <button type="submit">Create</button>
           </form>
+          )}
 
           <div className="map-list">
             <strong>Maps</strong>
@@ -499,7 +602,7 @@ function App() {
         <section className={`map-panel ${panels.top ? '' : 'top-panel-collapsed'}`}>
           <div className={`editor-toolbar ${panels.top ? '' : 'collapsed'}`} aria-label="Map editing tools">
             <div className="tool-group" role="group" aria-label="Tool">
-              {TOOLS.map((item) => {
+              {visibleTools.map((item) => {
                 const Icon = item.icon;
                 const disabled = item.id === 'move' && editorLayer === 'terrain';
                 return (
@@ -527,7 +630,7 @@ function App() {
                   min="5"
                   max="99"
                   value={activeMap?.gridWidth ?? activeMap?.gridSize ?? 40}
-                  disabled={!activeMap}
+                  disabled={!activeMap || !permissions.canEditMaps}
                   onChange={(event) => updateActiveMapSize({ gridWidth: clampNumber(event.target.value, 5, 99, 40) })}
                 />
               </label>
@@ -538,7 +641,7 @@ function App() {
                   min="5"
                   max="99"
                   value={activeMap?.gridHeight ?? activeMap?.gridSize ?? 40}
-                  disabled={!activeMap}
+                  disabled={!activeMap || !permissions.canEditMaps}
                   onChange={(event) => updateActiveMapSize({ gridHeight: clampNumber(event.target.value, 5, 99, 40) })}
                 />
               </label>
@@ -547,6 +650,7 @@ function App() {
                 <input
                   type="color"
                   value={drawingColor}
+                  disabled={!permissions.canEditDrawings}
                   onChange={(event) => setDrawingColor(event.target.value)}
                   aria-label="Drawing color"
                 />
@@ -555,6 +659,7 @@ function App() {
                 <input
                   type="checkbox"
                   checked={filledDrawing}
+                  disabled={!permissions.canEditDrawings}
                   onChange={(event) => setFilledDrawing(event.target.checked)}
                 />
                 <span>Fill</span>
@@ -566,10 +671,11 @@ function App() {
                   min="20"
                   max="120"
                   value={cellSize}
+                  disabled={!permissions.canEditMaps}
                   onChange={(event) => setCellSize(clampNumber(event.target.value, 20, 120, 50))}
                 />
               </label>
-              <button type="button" onClick={handleClearDrawings} disabled={!drawings.length}>
+              <button type="button" onClick={handleClearDrawings} disabled={!drawings.length || !permissions.canEditDrawings}>
                 Clear drawings
               </button>
             </div>
@@ -583,6 +689,7 @@ function App() {
                 <span>Image URL</span>
                 <input
                   value={backgroundImage.src}
+                  disabled={!permissions.canEditBackground}
                   onChange={(event) => updateBackgroundImage({ src: event.target.value })}
                   placeholder="https://... or /path/image.png"
                 />
@@ -593,6 +700,7 @@ function App() {
                   type="number"
                   min="1"
                   value={backgroundImage.width}
+                  disabled={!permissions.canEditBackground}
                   onChange={(event) => updateBackgroundImage({ width: clampNumber(event.target.value, 1, 20000, 1) })}
                 />
               </label>
@@ -602,6 +710,7 @@ function App() {
                   type="number"
                   min="1"
                   value={backgroundImage.height}
+                  disabled={!permissions.canEditBackground}
                   onChange={(event) => updateBackgroundImage({ height: clampNumber(event.target.value, 1, 20000, 1) })}
                 />
               </label>
@@ -610,6 +719,7 @@ function App() {
                 <input
                   type="number"
                   value={backgroundImage.offsetX}
+                  disabled={!permissions.canEditBackground}
                   onChange={(event) => updateBackgroundImage({ offsetX: readNumberInput(event.target.value, 0) })}
                 />
               </label>
@@ -618,10 +728,11 @@ function App() {
                 <input
                   type="number"
                   value={backgroundImage.offsetY}
+                  disabled={!permissions.canEditBackground}
                   onChange={(event) => updateBackgroundImage({ offsetY: readNumberInput(event.target.value, 0) })}
                 />
               </label>
-              <button type="button" onClick={clearBackgroundImage} disabled={!backgroundImage.src}>
+              <button type="button" onClick={clearBackgroundImage} disabled={!backgroundImage.src || !permissions.canEditBackground}>
                 Clear background
               </button>
             </div>
@@ -686,17 +797,23 @@ function App() {
 
           <div className="right-tab-body">
             {rightTab === 'tiles' ? (
-              <TilePalette
+              permissions.canEditTiles ? (
+                <TilePalette
                 tiles={layerTiles}
                 selectedTile={selectedTile}
                 onSelect={setSelectedTile}
                 layerLabel={EDITOR_LAYERS.find((layer) => layer.id === editorLayer)?.label}
               />
+              ) : (
+                <div className="empty-state compact">Map tiles are editable by the campaign owner.</div>
+              )
             ) : (
               <EntityPanel
                 entities={entities}
                 selectedEntityId={selectedEntityId}
                 tiles={tiles}
+                canManageEntities={permissions.canManageEntities}
+                canEditEntity={(entity) => canControlEntity(entity, entities, viewerUserId, permissions)}
                 onAdd={handleAddEntity}
                 onUpdate={handleUpdateEntity}
                 onDelete={handleDeleteEntity}
@@ -736,6 +853,20 @@ function readLegacyStoredJson(key, fallback) {
 function readNumberInput(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function canControlEntity(entity, entities, viewerUserId, permissions) {
+  if (permissions.canManageEntities) return true;
+  if (!permissions.canControlEntities || !viewerUserId) return false;
+  if (entity.ownerId === viewerUserId) return true;
+  if (entity.type !== 'charmie' || !entity.ownerId) return false;
+
+  const ownerEntity = entities.find((candidate) => candidate.id === entity.ownerId);
+  return ownerEntity?.ownerId === viewerUserId;
+}
+
+function isEntityPatch(patch) {
+  return Object.keys(patch).every((key) => ['hp', 'maxHp', 'x', 'y'].includes(key));
 }
 
 function PaintIcon() {

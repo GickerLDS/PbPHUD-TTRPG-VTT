@@ -87,6 +87,8 @@ The parser keeps unknown payloads in memory so migration tools can inspect them 
 ## Production Notes
 
 - Copy tile assets into managed object storage or a new app-owned asset directory before public launch.
-- Add authentication/authorization before exposing editing endpoints.
+- Chummer campaign sync uses `PBPHUD_INTEGRATION_TOKEN`; configure the same value as Chummer's `PBPHUD_VTT_API_TOKEN`.
+- Imported Chummer campaign maps are owner-editable. Campaign players can view maps, use measurement tools, and control entities whose `ownerId` is their Chummer user ID.
+- The local React prototype sends `X-PBPHUD-Viewer-Id` from the viewer selector or `?viewerUserId=...`; replace this with a real session/SSO identity before public launch.
 - Add explicit import scripts once a real legacy database dump is available.
 - Put the app behind HTTPS and a reverse proxy.

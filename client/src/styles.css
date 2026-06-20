@@ -101,6 +101,22 @@ select {
   min-width: 64px;
 }
 
+.viewer-control {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+  color: #64748b;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.viewer-control input {
+  min-width: 0;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .workspace {
   --left-panel-width: 260px;
   --right-panel-width: 320px;

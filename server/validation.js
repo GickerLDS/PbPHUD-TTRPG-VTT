@@ -39,7 +39,8 @@ const entity = z.object({
   maxHp: z.number().int().min(1).max(100000),
   ownerId: z.string().max(120).nullable().optional(),
   x: z.number().int().min(1).max(99).nullable().optional(),
-  y: z.number().int().min(1).max(99).nullable().optional()
+  y: z.number().int().min(1).max(99).nullable().optional(),
+  source: z.unknown().optional()
 });
 
 export const createMapSchema = z.object({
@@ -85,6 +86,52 @@ export const tilePatchSchema = z.object({
   tileCode,
   layer: layer.optional(),
   erase: z.boolean().default(false)
+});
+
+export const entityPatchSchema = z.object({
+  hp: z.number().int().min(0).max(100000).optional(),
+  maxHp: z.number().int().min(1).max(100000).optional(),
+  x: z.number().int().min(1).max(99).nullable().optional(),
+  y: z.number().int().min(1).max(99).nullable().optional()
+});
+
+export const chummerCampaignImportSchema = z.object({
+  viewer: z.object({
+    userId: z.string().min(1).max(191),
+    displayName: z.string().max(255).default(''),
+    email: z.string().max(320).optional()
+  }).optional(),
+  campaign: z.object({
+    id: z.string().min(1).max(191),
+    name: z.string().min(1).max(255),
+    creatorUserId: z.string().min(1).max(191),
+    creatorDisplayName: z.string().max(255).default('')
+  }),
+  members: z.array(z.object({
+    userId: z.string().min(1).max(191),
+    displayName: z.string().max(255).default(''),
+    role: z.enum(['creator', 'member']).or(z.string().max(32))
+  })).max(500).default([]),
+  characters: z.array(z.object({
+    id: z.string().min(1).max(191),
+    ownerUserId: z.string().min(1).max(191),
+    ownerDisplayName: z.string().max(255).default(''),
+    name: z.string().max(255).default('Unnamed'),
+    entity,
+    payload: z.unknown().optional()
+  })).max(1000).default([])
+});
+
+export const chummerCreateMapSchema = z.object({
+  actorUserId: z.string().min(1).max(191),
+  mapName,
+  gridWidth: gridDimension.default(40),
+  gridHeight: gridDimension.default(40)
+});
+
+export const chummerSyncEntitiesSchema = z.object({
+  actorUserId: z.string().min(1).max(191),
+  entities: z.array(entity).max(1000)
 });
 
 export function validate(schema, value) {

@@ -13,6 +13,8 @@ export function EntityPanel({
   entities,
   selectedEntityId,
   tiles,
+  canManageEntities,
+  canEditEntity,
   onAdd,
   onUpdate,
   onDelete,
@@ -76,6 +78,7 @@ export function EntityPanel({
         <span>{entities.length} total</span>
       </div>
 
+      {canManageEntities && (
       <form className="entity-form" onSubmit={handleSubmit}>
         <strong>Add Entity</strong>
         <select
@@ -138,6 +141,7 @@ export function EntityPanel({
         <input type="file" accept="image/*" onChange={handleDraftFile} />
         <button type="submit">Add entity</button>
       </form>
+      )}
 
       {pickerOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setPickerOpen(false)}>
@@ -195,11 +199,13 @@ export function EntityPanel({
             onUpdate={(patch) => onUpdate(entity.id, patch)}
             onDelete={() => setPendingDelete(entity)}
             playerEntities={playerEntities}
+            canManageEntities={canManageEntities}
+            canEdit={canEditEntity?.(entity) ?? false}
           />
         ))}
       </div>
 
-      {pendingDelete && (
+      {pendingDelete && canManageEntities && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setPendingDelete(null)}>
           <div
             className="confirm-modal"
@@ -235,7 +241,16 @@ export function EntityPanel({
   );
 }
 
-function EntityRow({ entity, selected, onSelect, onUpdate, onDelete, playerEntities }) {
+function EntityRow({
+  entity,
+  selected,
+  onSelect,
+  onUpdate,
+  onDelete,
+  playerEntities,
+  canManageEntities,
+  canEdit
+}) {
   const owner = playerEntities.find((player) => player.id === entity.ownerId);
 
   return (
@@ -251,7 +266,7 @@ function EntityRow({ entity, selected, onSelect, onUpdate, onDelete, playerEntit
           </small>
         </span>
       </button>
-      {entity.type === 'charmie' && (
+      {entity.type === 'charmie' && canManageEntities && (
         <select
           value={entity.ownerId || ''}
           onChange={(event) => onUpdate({ ownerId: event.target.value || null })}
@@ -268,6 +283,7 @@ function EntityRow({ entity, selected, onSelect, onUpdate, onDelete, playerEntit
           type="number"
           min="0"
           value={entity.hp}
+          disabled={!canEdit}
           onChange={(event) => onUpdate({ hp: readPositiveNumber(event.target.value, 0) })}
           aria-label={`${entity.name} current HP`}
         />
@@ -276,10 +292,12 @@ function EntityRow({ entity, selected, onSelect, onUpdate, onDelete, playerEntit
           type="number"
           min="1"
           value={entity.maxHp}
+          disabled={!canEdit}
           onChange={(event) => onUpdate({ maxHp: readPositiveNumber(event.target.value, 1) })}
           aria-label={`${entity.name} max HP`}
         />
-        <button type="button" onClick={onSelect}>Place</button>
+        <button type="button" onClick={onSelect} disabled={!canEdit}>Place</button>
+        {canManageEntities && (
         <button
           type="button"
           onClick={(event) => {
@@ -289,6 +307,7 @@ function EntityRow({ entity, selected, onSelect, onUpdate, onDelete, playerEntit
         >
           Remove
         </button>
+        )}
       </div>
     </div>
   );

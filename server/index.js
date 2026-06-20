@@ -8,6 +8,7 @@ import { checkDatabase } from './db.js';
 import { config } from './env.js';
 import { mapsRouter } from './routes/maps.js';
 import { assetsRouter } from './routes/assets.js';
+import { integrationsRouter } from './routes/integrations.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, '..', 'dist');
@@ -44,6 +45,7 @@ app.get('/api/db/health', async (_req, res, next) => {
 
 app.use('/api/maps', mapsRouter);
 app.use('/api/assets', assetsRouter);
+app.use('/api/integrations', integrationsRouter);
 app.use('/tiles', express.static(config.tileAssetDir, {
   immutable: true,
   maxAge: '7d',
@@ -75,7 +77,7 @@ if (config.nodeEnv !== 'production') {
 
 if (config.nodeEnv === 'production') {
   app.use(express.static(distDir));
-  app.get('*', (_req, res) => {
+  app.get('/{*splat}', (_req, res) => {
     res.sendFile(path.join(distDir, 'index.html'));
   });
 }
