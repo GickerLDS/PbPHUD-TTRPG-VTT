@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "node --watch server/index.js",
-    "dev:client": "vite --host 127.0.0.1",
+    "dev:client": "vite",
     "build": "vite build",
     "start": "node server/index.js",
     "start:prod": "cross-env NODE_ENV=production node server/index.js",

@@ -58,6 +58,7 @@ function App() {
   const [error, setError] = useState('');
   const [viewerUserId, setViewerUserIdState] = useState(() => getViewerUserId());
   const [newMap, setNewMap] = useState({ groupName: 'demo', mapName: 'map1', gridWidth: 40, gridHeight: 40 });
+  const [mapSizeDraft, setMapSizeDraft] = useState({ gridWidth: '40', gridHeight: '40' });
   const activeMapRef = useRef(null);
   const editorStateRef = useRef({
     cellSize: 50,
@@ -125,6 +126,18 @@ function App() {
   useEffect(() => {
     activeMapRef.current = activeMap;
   }, [activeMap]);
+
+  useEffect(() => {
+    if (!activeMap) {
+      setMapSizeDraft({ gridWidth: '40', gridHeight: '40' });
+      return;
+    }
+
+    setMapSizeDraft({
+      gridWidth: String(activeMap.gridWidth ?? activeMap.gridSize ?? 40),
+      gridHeight: String(activeMap.gridHeight ?? activeMap.gridSize ?? 40)
+    });
+  }, [activeMap?.groupName, activeMap?.mapName]);
 
   useEffect(() => {
     if (!selectedKey) {
@@ -204,11 +217,17 @@ function App() {
       showError(new Error('Only the campaign owner can create maps.'));
       return;
     }
+    const gridWidth = parseGridDimension(newMap.gridWidth);
+    const gridHeight = parseGridDimension(newMap.gridHeight);
+    if (!gridWidth || !gridHeight) {
+      showError(new Error('Map width and height must be numbers from 5 to 99.'));
+      return;
+    }
     try {
       const data = await createMap({
         ...newMap,
-        gridWidth: Number(newMap.gridWidth),
-        gridHeight: Number(newMap.gridHeight)
+        gridWidth,
+        gridHeight
       });
       setActiveMap(data.map);
       setMessage(`Created ${data.map.groupName}/${data.map.mapName}`);
@@ -357,6 +376,14 @@ function App() {
       activeMapRef.current = next;
       return next;
     });
+  }
+
+  function commitActiveMapSize(field) {
+    if (!activeMap || !permissions.canEditMaps) return;
+    const fallback = activeMap[field] ?? activeMap.gridSize ?? 40;
+    const value = parseGridDimension(mapSizeDraft[field], fallback);
+    setMapSizeDraft((current) => ({ ...current, [field]: String(value) }));
+    updateActiveMapSize({ [field]: value });
   }
 
   function handleAddEntity(entity) {
@@ -563,17 +590,15 @@ function App() {
               placeholder="Map name"
             />
             <input
-              type="number"
-              min="5"
-              max="99"
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={newMap.gridWidth}
               onChange={(event) => setNewMap({ ...newMap, gridWidth: event.target.value })}
               placeholder="Width squares"
             />
             <input
-              type="number"
-              min="5"
-              max="99"
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={newMap.gridHeight}
               onChange={(event) => setNewMap({ ...newMap, gridHeight: event.target.value })}
               placeholder="Height squares"
@@ -626,23 +651,29 @@ function App() {
               <label className="size-control map-size-control">
                 <span>Map W</span>
                 <input
-                  type="number"
-                  min="5"
-                  max="99"
-                  value={activeMap?.gridWidth ?? activeMap?.gridSize ?? 40}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={mapSizeDraft.gridWidth}
                   disabled={!activeMap || !permissions.canEditMaps}
-                  onChange={(event) => updateActiveMapSize({ gridWidth: clampNumber(event.target.value, 5, 99, 40) })}
+                  onChange={(event) => setMapSizeDraft((current) => ({ ...current, gridWidth: event.target.value }))}
+                  onBlur={() => commitActiveMapSize('gridWidth')}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') event.currentTarget.blur();
+                  }}
                 />
               </label>
               <label className="size-control map-size-control">
                 <span>Map H</span>
                 <input
-                  type="number"
-                  min="5"
-                  max="99"
-                  value={activeMap?.gridHeight ?? activeMap?.gridSize ?? 40}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={mapSizeDraft.gridHeight}
                   disabled={!activeMap || !permissions.canEditMaps}
-                  onChange={(event) => updateActiveMapSize({ gridHeight: clampNumber(event.target.value, 5, 99, 40) })}
+                  onChange={(event) => setMapSizeDraft((current) => ({ ...current, gridHeight: event.target.value }))}
+                  onBlur={() => commitActiveMapSize('gridHeight')}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') event.currentTarget.blur();
+                  }}
                 />
               </label>
               <label className="color-control">
@@ -840,6 +871,14 @@ function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, number));
+}
+
+function parseGridDimension(value, fallback = null) {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return fallback;
+  const number = Number(trimmed);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(5, Math.min(99, Math.trunc(number)));
 }
 
 function readLegacyStoredJson(key, fallback) {

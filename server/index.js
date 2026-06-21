@@ -16,6 +16,7 @@ const distDir = path.resolve(__dirname, '..', 'dist');
 const app = express();
 
 app.use(helmet({
+  hsts: config.nodeEnv === 'production',
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
 app.use(cors({
@@ -67,7 +68,7 @@ if (config.nodeEnv !== 'production') {
         </head>
         <body>
           <h1>PBPHud Map API</h1>
-          <p>The backend is running. In development, open the React app at <a href="http://127.0.0.1:5173">http://127.0.0.1:5173</a>.</p>
+          <p>The backend is running. In development, open the React app at <a href="${config.clientOrigin}">${config.clientOrigin}</a>.</p>
           <p>API health check: <a href="/api/health"><code>/api/health</code></a></p>
         </body>
       </html>
@@ -91,6 +92,7 @@ app.use((error, _req, res, _next) => {
 });
 
 app.listen(config.port, () => {
-  console.log(`Map API listening on http://127.0.0.1:${config.port}`);
+  console.log(`Map API listening on port ${config.port}`);
+  console.log(`Map API public origin: ${config.apiOrigin}`);
   console.log(`Serving tile assets from ${config.tileAssetDir}`);
 });

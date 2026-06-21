@@ -43,7 +43,18 @@ npm.cmd run db:migrate
 npm.cmd run dev
 ```
 
-The React app runs on `http://127.0.0.1:5173`. The API runs on `http://127.0.0.1:3001`.
+The React app runs on `http://127.0.0.1:5173` by default. The API runs on `http://127.0.0.1:3001`.
+
+To use a different development host, port, or custom domain, update `.env`:
+
+```dotenv
+CLIENT_HOST=0.0.0.0
+CLIENT_PORT=8080
+CLIENT_ORIGIN=http://maps.example.com:8080
+CORS_ORIGINS=https://other-app.example.com
+```
+
+`CLIENT_ORIGIN` is optional for local development; when omitted, it is built from `CLIENT_HOST` and `CLIENT_PORT`. The API always allows `CLIENT_ORIGIN` through CORS; use `CORS_ORIGINS` only for extra allowed domains. If you set `CLIENT_ORIGIN` or `API_ORIGIN`, include the port there too because those full URLs override the host/port pieces. Vite serves HTTP by default, so use an `https://` client origin only when a reverse proxy or Vite TLS config is serving HTTPS for that domain.
 
 Check backend and database health:
 
