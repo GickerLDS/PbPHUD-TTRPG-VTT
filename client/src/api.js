@@ -35,6 +35,64 @@ export async function createCampaignMap(campaignId, payload) {
   return parseResponse(response);
 }
 
+export async function listForumThreads(campaignId, mapId = null) {
+  const params = mapId ? `?mapId=${encodeURIComponent(mapId)}` : '';
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads${params}`, {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function createForumThread(campaignId, payload) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function getForumThread(campaignId, threadId) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}`,
+    { headers: viewerHeaders() }
+  );
+  return parseResponse(response);
+}
+
+export async function createForumPost(campaignId, threadId, body) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts`,
+    {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ body })
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function assignForumThreadMap(campaignId, threadId, mapId) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/map`,
+    {
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ mapId })
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function sendContactMessage(payload) {
+  const response = await fetch('/api/contact', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
 export async function getAuthConfig() {
   const response = await fetch('/api/auth/config');
   return parseResponse(response);

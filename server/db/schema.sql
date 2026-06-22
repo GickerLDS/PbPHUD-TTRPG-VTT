@@ -105,6 +105,39 @@ CREATE TABLE IF NOT EXISTS map_campaign_invites (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS campaign_forum_threads (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  campaign_id BIGINT UNSIGNED NOT NULL,
+  map_id BIGINT UNSIGNED NULL,
+  title VARCHAR(180) NOT NULL,
+  created_by_user_id VARCHAR(191) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_campaign_forum_threads_campaign (campaign_id),
+  KEY idx_campaign_forum_threads_map (map_id),
+  CONSTRAINT fk_campaign_forum_threads_campaign
+    FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_campaign_forum_threads_map
+    FOREIGN KEY (map_id) REFERENCES maps (id)
+    ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS campaign_forum_posts (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  thread_id BIGINT UNSIGNED NOT NULL,
+  author_user_id VARCHAR(191) NOT NULL,
+  body_bbcode LONGTEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_campaign_forum_posts_thread (thread_id, created_at),
+  CONSTRAINT fk_campaign_forum_posts_thread
+    FOREIGN KEY (thread_id) REFERENCES campaign_forum_threads (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS map_shares (
   map_id BIGINT UNSIGNED NOT NULL,
   user_id VARCHAR(191) NOT NULL,

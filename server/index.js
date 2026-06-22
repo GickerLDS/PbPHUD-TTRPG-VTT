@@ -9,6 +9,7 @@ import { config } from './env.js';
 import { attachUser } from './auth.js';
 import { authRouter } from './routes/auth.js';
 import { campaignsRouter } from './routes/campaigns.js';
+import { contactRouter } from './routes/contact.js';
 import { mapsRouter } from './routes/maps.js';
 import { assetsRouter } from './routes/assets.js';
 import { integrationsRouter } from './routes/integrations.js';
@@ -53,6 +54,7 @@ app.use('/api/campaigns', campaignsRouter);
 app.use('/api/assets', assetsRouter);
 app.use('/api/integrations', integrationsRouter);
 app.use('/api/auth', authRouter);
+app.use('/api/contact', contactRouter);
 app.use('/tiles', express.static(config.tileAssetDir, {
   immutable: true,
   maxAge: '7d',

@@ -98,7 +98,7 @@ export async function sendVerificationEmail(user, token) {
   });
 }
 
-export async function verifyRecaptcha(token, remoteIp) {
+export async function verifyRecaptcha(token, remoteIp, expectedAction = config.auth.recaptchaAction) {
   if (!config.auth.requireRecaptcha) return true;
   if (!token) {
     console.warn('reCAPTCHA verification failed: missing token');
@@ -133,13 +133,13 @@ export async function verifyRecaptcha(token, remoteIp) {
     const ok = (
       Number.isFinite(score) &&
       score >= config.auth.recaptchaMinScore &&
-      data.action === config.auth.recaptchaAction
+      data.action === expectedAction
     );
     if (!ok) {
       console.warn('reCAPTCHA v3 score check failed', {
         score: data.score,
         action: data.action,
-        expectedAction: config.auth.recaptchaAction,
+        expectedAction,
         minScore: config.auth.recaptchaMinScore
       });
     }

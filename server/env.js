@@ -76,6 +76,7 @@ export const config = {
   },
   email: {
     from: process.env.MAIL_FROM || 'no-reply@localhost',
+    contactTo: process.env.CONTACT_TO_EMAIL || '',
     smtp: {
       host: process.env.SMTP_HOST || 'mail.smtp2go.com',
       port: intFromEnv('SMTP_PORT', 587),
