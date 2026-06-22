@@ -3,6 +3,97 @@ export async function listMaps() {
   return parseResponse(response);
 }
 
+export async function listCampaigns() {
+  const response = await fetch('/api/campaigns', { headers: viewerHeaders() });
+  return parseResponse(response);
+}
+
+export async function createCampaign(payload) {
+  const response = await fetch('/api/campaigns', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function inviteCampaignMember(campaignId, userId) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/members`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ userId })
+  });
+  return parseResponse(response);
+}
+
+export async function createCampaignMap(campaignId, payload) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/maps`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function getAuthConfig() {
+  const response = await fetch('/api/auth/config');
+  return parseResponse(response);
+}
+
+export async function getCurrentUser() {
+  const response = await fetch('/api/auth/me', { headers: authHeaders() });
+  return parseResponse(response);
+}
+
+export async function registerAccount(payload) {
+  const response = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function loginAccount(payload) {
+  const response = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  const data = await parseResponse(response);
+  setAuthToken(data.token);
+  return data;
+}
+
+export async function resendVerificationEmail(email) {
+  const response = await fetch('/api/auth/resend-verification', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ email })
+  });
+  return parseResponse(response);
+}
+
+export async function logoutAccount() {
+  const response = await fetch('/api/auth/logout', {
+    method: 'POST',
+    headers: authHeaders()
+  });
+  clearAuthToken();
+  return parseResponse(response);
+}
+
+export async function verifyEmail(token) {
+  const response = await fetch('/api/auth/verify-email', {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ token })
+  });
+  const data = await parseResponse(response);
+  setAuthToken(data.token);
+  return data;
+}
+
 export async function createMap(payload) {
   const response = await fetch('/api/maps', {
     method: 'POST',
@@ -15,6 +106,31 @@ export async function createMap(payload) {
 export async function getMap(groupName, mapName) {
   const response = await fetch(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}`, {
     headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function getMapById(mapId) {
+  const response = await fetch(`/api/maps/${encodeURIComponent(mapId)}`, {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function setMapVisibility(mapId, playerVisible) {
+  const response = await fetch(`/api/maps/${encodeURIComponent(mapId)}/visibility`, {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ playerVisible })
+  });
+  return parseResponse(response);
+}
+
+export async function inviteMapUser(mapId, userId) {
+  const response = await fetch(`/api/maps/${encodeURIComponent(mapId)}/campaign-invites`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ userId })
   });
   return parseResponse(response);
 }
@@ -35,6 +151,35 @@ export async function patchEntity(groupName, mapName, entityId, payload) {
       method: 'PATCH',
       headers: jsonHeaders(),
       body: JSON.stringify(payload)
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function createEntity(groupName, mapName, payload) {
+  const response = await fetch(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/entities`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function shareMap(groupName, mapName, userId) {
+  const response = await fetch(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/shares`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ userId })
+  });
+  return parseResponse(response);
+}
+
+export async function unshareMap(groupName, mapName, userId) {
+  const response = await fetch(
+    `/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/shares/${encodeURIComponent(userId)}`,
+    {
+      method: 'DELETE',
+      headers: viewerHeaders()
     }
   );
   return parseResponse(response);
@@ -86,6 +231,32 @@ function jsonHeaders() {
 }
 
 function viewerHeaders() {
+  const token = getAuthToken();
+  if (token) return { Authorization: `Bearer ${token}` };
   const viewerUserId = getViewerUserId().trim();
   return viewerUserId ? { 'X-PBPHUD-Viewer-Id': viewerUserId } : {};
+}
+
+function authHeaders() {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export function getAuthToken() {
+  if (typeof window === 'undefined') return '';
+  return window.localStorage.getItem('pbphud-auth-token') || '';
+}
+
+export function setAuthToken(token) {
+  if (typeof window === 'undefined') return;
+  if (token) {
+    window.localStorage.setItem('pbphud-auth-token', token);
+  } else {
+    clearAuthToken();
+  }
+}
+
+export function clearAuthToken() {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem('pbphud-auth-token');
 }

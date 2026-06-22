@@ -59,6 +59,10 @@ export const createMapSchema = z.object({
   };
 });
 
+export const mapShareSchema = z.object({
+  userId: z.string().trim().min(1).max(191)
+});
+
 export const replaceMapSchema = z.object({
   gridSize: gridSize.optional(),
   gridWidth: gridDimension.optional(),
@@ -93,6 +97,10 @@ export const entityPatchSchema = z.object({
   maxHp: z.number().int().min(1).max(100000).optional(),
   x: z.number().int().min(1).max(99).nullable().optional(),
   y: z.number().int().min(1).max(99).nullable().optional()
+});
+
+export const createEntitySchema = entity.omit({ id: true }).extend({
+  ownerId: z.string().max(120).nullable().optional()
 });
 
 export const chummerCampaignImportSchema = z.object({

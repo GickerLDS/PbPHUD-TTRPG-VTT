@@ -14,6 +14,7 @@ export function EntityPanel({
   selectedEntityId,
   tiles,
   canManageEntities,
+  canCreateEntities,
   canEditEntity,
   onAdd,
   onUpdate,
@@ -39,7 +40,7 @@ export function EntityPanel({
     return entities.filter((entity) => entity.type === 'player');
   }, [entities]);
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
     const name = draft.name.trim();
     if (!name) return;
@@ -47,8 +48,9 @@ export function EntityPanel({
     const maxHp = Math.max(1, readPositiveNumber(draft.maxHp, 1));
     const hp = Math.min(maxHp, readPositiveNumber(draft.hp, 1));
 
-    onAdd({
+    await onAdd({
       ...draft,
+      type: canManageEntities ? draft.type : 'player',
       name,
       hp,
       maxHp
@@ -78,25 +80,27 @@ export function EntityPanel({
         <span>{entities.length} total</span>
       </div>
 
-      {canManageEntities && (
+      {canCreateEntities && (
       <form className="entity-form" onSubmit={handleSubmit}>
-        <strong>Add Entity</strong>
-        <select
-          value={draft.type}
-          onChange={(event) => {
-            const type = event.target.value;
-            setDraft({
-              ...draft,
-              type,
-              ownerId: type === 'charmie' ? draft.ownerId : ''
-            });
-          }}
-        >
-          <option value="player">Player</option>
-          <option value="mob">Mob</option>
-          <option value="charmie">Charmie</option>
-        </select>
-        {draft.type === 'charmie' && (
+        <strong>{canManageEntities ? 'Add Entity' : 'Add Player Entity'}</strong>
+        {canManageEntities && (
+          <select
+            value={draft.type}
+            onChange={(event) => {
+              const type = event.target.value;
+              setDraft({
+                ...draft,
+                type,
+                ownerId: type === 'charmie' ? draft.ownerId : ''
+              });
+            }}
+          >
+            <option value="player">Player</option>
+            <option value="mob">Mob</option>
+            <option value="charmie">Charmie</option>
+          </select>
+        )}
+        {canManageEntities && draft.type === 'charmie' && (
           <select
             value={draft.ownerId}
             onChange={(event) => setDraft({ ...draft, ownerId: event.target.value })}
@@ -139,7 +143,7 @@ export function EntityPanel({
           placeholder="Image URL"
         />
         <input type="file" accept="image/*" onChange={handleDraftFile} />
-        <button type="submit">Add entity</button>
+        <button type="submit">{canManageEntities ? 'Add entity' : 'Add player'}</button>
       </form>
       )}
 

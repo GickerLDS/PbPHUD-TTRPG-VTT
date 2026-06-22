@@ -1,15 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  createEntity,
+  createCampaign,
+  createCampaignMap,
   createMap,
+  getAuthConfig,
+  getCurrentUser,
   getMap,
+  getMapById,
   getViewerUserId,
+  inviteCampaignMember,
+  inviteMapUser,
+  listCampaigns,
   listMaps,
   listTileAssets,
+  loginAccount,
+  logoutAccount,
   patchEntity,
   patchTile,
+  registerAccount,
+  resendVerificationEmail,
   saveMap,
-  setViewerUserId
+  setMapVisibility,
+  setViewerUserId,
+  shareMap,
+  unshareMap,
+  verifyEmail
 } from './api.js';
 import { EntityPanel } from './components/EntityPanel.jsx';
 import { MapCanvas } from './components/MapCanvas.jsx';
@@ -39,7 +56,10 @@ const defaultBackgroundImage = {
 };
 
 function App() {
+  const path = window.location.pathname;
+  const mapRouteMatch = path.match(/^\/maps\/(\d+)$/);
   const [maps, setMaps] = useState([]);
+  const [campaigns, setCampaigns] = useState([]);
   const [activeMap, setActiveMap] = useState(null);
   const [tiles, setTiles] = useState([]);
   const [selectedTile, setSelectedTile] = useState(null);
@@ -56,9 +76,27 @@ function App() {
   const [panels, setPanels] = useState({ left: true, top: true, right: true });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [authUser, setAuthUser] = useState(null);
+  const [authConfig, setAuthConfig] = useState({
+    recaptchaSiteKey: '',
+    recaptchaType: 'v3',
+    recaptchaAction: 'register',
+    recaptchaMinScore: 0.5,
+    requireRecaptcha: false
+  });
+  const [authMode, setAuthMode] = useState('login');
+  const [authDraft, setAuthDraft] = useState({ email: '', displayName: '', password: '' });
+  const recaptchaRef = useRef(null);
+  const recaptchaWidgetRef = useRef(null);
   const [viewerUserId, setViewerUserIdState] = useState(() => getViewerUserId());
+  const [viewerUserIdDraft, setViewerUserIdDraft] = useState(() => getViewerUserId());
   const [newMap, setNewMap] = useState({ groupName: 'demo', mapName: 'map1', gridWidth: 40, gridHeight: 40 });
   const [mapSizeDraft, setMapSizeDraft] = useState({ gridWidth: '40', gridHeight: '40' });
+  const [shareUserId, setShareUserId] = useState('');
+  const [campaignDraft, setCampaignDraft] = useState({ name: '' });
+  const [campaignMemberDraft, setCampaignMemberDraft] = useState({});
+  const [campaignMapDraft, setCampaignMapDraft] = useState({});
+  const [mapInviteDraft, setMapInviteDraft] = useState('');
   const activeMapRef = useRef(null);
   const editorStateRef = useRef({
     cellSize: 50,
@@ -83,14 +121,16 @@ function App() {
 
   const permissions = activeMap?.permissions ?? {
     canViewMap: true,
-    canCreateMaps: true,
-    canEditMaps: true,
-    canEditTiles: true,
-    canEditDrawings: true,
-    canEditBackground: true,
-    canManageEntities: true,
+    canCreateMaps: Boolean(viewerUserId),
+    canEditMaps: false,
+    canEditTiles: false,
+    canEditDrawings: false,
+    canEditBackground: false,
+    canManageEntities: false,
+    canCreateEntities: Boolean(viewerUserId),
     canUseMeasurements: true,
-    canControlEntities: true
+    canControlEntities: Boolean(viewerUserId),
+    canShareMap: false
   };
 
   const visibleTools = useMemo(() => {
@@ -102,7 +142,7 @@ function App() {
         return permissions.canUseMeasurements;
       }
       if (item.id === 'entity') {
-        return permissions.canManageEntities || permissions.canControlEntities;
+        return permissions.canCreateEntities || permissions.canControlEntities;
       }
       return true;
     });
@@ -110,10 +150,56 @@ function App() {
 
   useEffect(() => {
     refreshMaps();
+    loadAuth();
     listTileAssets()
       .then((data) => {
         setTiles(data.tiles);
         setSelectedTile(data.tiles.find((tile) => tileMatchesEditorLayer(tile, editorLayer)) ?? data.tiles[0] ?? null);
+      })
+      .catch(showError);
+  }, []);
+
+  useEffect(() => {
+    if (!authUser) return;
+    refreshCampaigns();
+    if (mapRouteMatch?.[1]) {
+      loadMapById(mapRouteMatch[1]);
+    }
+  }, [authUser?.id, path]);
+
+  useEffect(() => {
+    if (authMode !== 'register' || !authConfig.recaptchaSiteKey || authConfig.recaptchaType !== 'v2') return;
+
+    let cancelled = false;
+    loadRecaptchaScript(authConfig.recaptchaSiteKey, 'v2')
+      .then(() => {
+        if (cancelled || !recaptchaRef.current || !window.grecaptcha?.render || recaptchaWidgetRef.current !== null) return;
+        recaptchaWidgetRef.current = window.grecaptcha.render(recaptchaRef.current, {
+          sitekey: authConfig.recaptchaSiteKey
+        });
+      })
+      .catch(showError);
+
+    return () => {
+      cancelled = true;
+      recaptchaWidgetRef.current = null;
+    };
+  }, [authConfig.recaptchaSiteKey, authConfig.recaptchaType, authMode]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('verifyEmailToken');
+    if (!token) return;
+
+    verifyEmail(token)
+      .then((data) => {
+        setAuthUser(data.user);
+        setViewerUserIdState(data.user.id);
+        setViewerUserId(data.user.id);
+        setViewerUserIdDraft(data.user.id);
+        setMessage('Email verified. You are signed in.');
+        window.history.replaceState({}, '', window.location.pathname);
+        return refreshMaps();
       })
       .catch(showError);
   }, []);
@@ -200,6 +286,192 @@ function App() {
     }
   }
 
+  async function loadAuth() {
+    try {
+      const [configData, userData] = await Promise.all([
+        getAuthConfig(),
+        getCurrentUser()
+      ]);
+      setAuthConfig(configData);
+      if (userData.user) {
+        setAuthUser(userData.user);
+        setViewerUserIdState(userData.user.id);
+        setViewerUserId(userData.user.id);
+        setViewerUserIdDraft(userData.user.id);
+        await refreshCampaigns();
+      }
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleAuthSubmit(event) {
+    event.preventDefault();
+    try {
+      if (authMode === 'register') {
+        const latestAuthConfig = await getAuthConfig();
+        setAuthConfig(latestAuthConfig);
+        const recaptchaToken = await getRecaptchaToken(latestAuthConfig, recaptchaWidgetRef.current);
+        if (latestAuthConfig.requireRecaptcha && !recaptchaToken) {
+          throw new Error('Could not create a reCAPTCHA token. Refresh the page and try again.');
+        }
+        const data = await registerAccount({ ...authDraft, recaptchaToken });
+        window.grecaptcha?.reset?.(recaptchaWidgetRef.current);
+        setMessage(data.message || 'Registration created. Check your email to verify your account.');
+        setError('');
+        setAuthMode('login');
+        return;
+      }
+
+      const data = await loginAccount({ email: authDraft.email, password: authDraft.password });
+      setAuthUser(data.user);
+      setViewerUserIdState(data.user.id);
+      setViewerUserId(data.user.id);
+      setViewerUserIdDraft(data.user.id);
+      setMessage(`Signed in as ${data.user.displayName}`);
+      setError('');
+      await refreshMaps();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleResendVerification() {
+    try {
+      if (!authDraft.email.trim()) {
+        throw new Error('Enter your email address first.');
+      }
+
+      const data = await resendVerificationEmail(authDraft.email);
+      setMessage(data.message);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await logoutAccount();
+      setAuthUser(null);
+      setViewerUserIdState('');
+      setViewerUserId('');
+      setViewerUserIdDraft('');
+      setCampaigns([]);
+      if (path !== '/') window.location.href = '/';
+      setMessage('Signed out');
+      setError('');
+      await refreshMaps();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function refreshCampaigns() {
+    try {
+      const data = await listCampaigns();
+      setCampaigns(data.campaigns);
+    } catch (err) {
+      if (authUser) showError(err);
+    }
+  }
+
+  async function loadMapById(mapId) {
+    try {
+      const data = await getMapById(mapId);
+      setActiveMap(data.map);
+      setMessage(`Loaded ${data.map.mapName}`);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleCreateCampaign(event) {
+    event.preventDefault();
+    try {
+      const data = await createCampaign(campaignDraft);
+      setCampaignDraft({ name: '' });
+      setCampaigns((current) => [data.campaign, ...current]);
+      setMessage(`Created campaign ${data.campaign.name}`);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleInviteCampaignMember(campaignId) {
+    const userId = String(campaignMemberDraft[campaignId] || '').trim();
+    if (!userId) return;
+    try {
+      await inviteCampaignMember(campaignId, userId);
+      setCampaignMemberDraft((current) => ({ ...current, [campaignId]: '' }));
+      setMessage(`Invited ${userId}`);
+      setError('');
+      await refreshCampaigns();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleCreateCampaignMap(campaignId) {
+    const draft = campaignMapDraft[campaignId] || {};
+    const mapName = String(draft.mapName || '').trim();
+    if (!mapName) return;
+    try {
+      const data = await createCampaignMap(campaignId, {
+        mapName,
+        gridWidth: parseGridDimension(draft.gridWidth || 40, 40),
+        gridHeight: parseGridDimension(draft.gridHeight || 40, 40)
+      });
+      setCampaignMapDraft((current) => ({ ...current, [campaignId]: {} }));
+      setMessage(`Created map ${data.map.name}`);
+      setError('');
+      await refreshCampaigns();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleToggleMapVisibility() {
+    if (!activeMap?.id) return;
+    try {
+      const data = await setMapVisibility(activeMap.id, !activeMap.playerVisible);
+      activeMapRef.current = data.map;
+      setActiveMap(data.map);
+      setMessage(data.map.playerVisible ? 'Map is visible to campaign players' : 'Map is hidden from campaign players');
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleInviteMapUser(event) {
+    event.preventDefault();
+    const userId = mapInviteDraft.trim();
+    if (!activeMap?.id || !userId) return;
+    try {
+      const data = await inviteMapUser(activeMap.id, userId);
+      activeMapRef.current = data.map;
+      setActiveMap(data.map);
+      setMapInviteDraft('');
+      setMessage(`Invited ${userId} to this map`);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleConfirmViewer(event) {
+    event.preventDefault();
+    const nextViewerUserId = viewerUserIdDraft.trim();
+    setViewerUserIdState(nextViewerUserId);
+    setViewerUserId(nextViewerUserId);
+    setMessage(nextViewerUserId ? `Confirmed viewer ${nextViewerUserId}` : 'Viewer cleared');
+    setError('');
+    await refreshMaps();
+  }
+
   async function loadMap(groupName, mapName) {
     try {
       const data = await getMap(groupName, mapName);
@@ -213,8 +485,12 @@ function App() {
 
   async function handleCreateMap(event) {
     event.preventDefault();
+    if (!viewerUserId) {
+      showError(new Error('Confirm a Viewer ID before creating maps.'));
+      return;
+    }
     if (!permissions.canCreateMaps) {
-      showError(new Error('Only the campaign owner can create maps.'));
+      showError(new Error('This viewer cannot create maps.'));
       return;
     }
     const gridWidth = parseGridDimension(newMap.gridWidth);
@@ -386,22 +662,23 @@ function App() {
     updateActiveMapSize({ [field]: value });
   }
 
-  function handleAddEntity(entity) {
-    if (!permissions.canManageEntities) {
-      showError(new Error('Only the campaign owner can add entities.'));
+  async function handleAddEntity(entity) {
+    if (!activeMap) return;
+    if (!permissions.canCreateEntities) {
+      showError(new Error('Only the map owner and shared users can add player entities.'));
       return;
     }
-    const nextEntity = {
-      ...entity,
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      x: null,
-      y: null
-    };
-    setEntities((current) => [...current, nextEntity]);
-    setSelectedEntityId(nextEntity.id);
-    setTool('entity');
-    setMessage(`Added ${entity.name}. Select Entity tool and click the map to place it.`);
-    setError('');
+    try {
+      const data = await createEntity(activeMap.groupName, activeMap.mapName, entity);
+      activeMapRef.current = data.map;
+      setActiveMap(data.map);
+      setSelectedEntityId(data.entity.id);
+      setTool('entity');
+      setMessage(`Added ${data.entity.name}. Select Entity tool and click the map to place it.`);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
   }
 
   function handleUpdateEntity(id, patch) {
@@ -453,6 +730,40 @@ function App() {
 
   function togglePanel(panel) {
     setPanels((current) => ({ ...current, [panel]: !current[panel] }));
+  }
+
+  async function handleShareMap(event) {
+    event.preventDefault();
+    if (!activeMap || !permissions.canShareMap) return;
+    const userId = shareUserId.trim();
+    if (!userId) return;
+
+    try {
+      const data = await shareMap(activeMap.groupName, activeMap.mapName, userId);
+      activeMapRef.current = data.map;
+      setActiveMap(data.map);
+      setShareUserId('');
+      setMessage(`Shared map with ${userId}`);
+      setError('');
+      await refreshMaps();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleUnshareMap(userId) {
+    if (!activeMap || !permissions.canShareMap) return;
+
+    try {
+      const data = await unshareMap(activeMap.groupName, activeMap.mapName, userId);
+      activeMapRef.current = data.map;
+      setActiveMap(data.map);
+      setMessage(`Stopped sharing with ${userId}`);
+      setError('');
+      await refreshMaps();
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function handleSave() {
@@ -517,6 +828,152 @@ function App() {
       .catch(showError);
   }
 
+  if (!authUser) {
+    return (
+      <main className="auth-page">
+        <section className="auth-card">
+          <h1>PBPHud VTT</h1>
+          <p>Sign in to manage campaigns and maps.</p>
+          <form className="auth-page-form" onSubmit={handleAuthSubmit}>
+            <div className="auth-mode">
+              <button type="button" className={authMode === 'login' ? 'selected' : ''} onClick={() => setAuthMode('login')}>
+                Sign in
+              </button>
+              <button type="button" className={authMode === 'register' ? 'selected' : ''} onClick={() => setAuthMode('register')}>
+                Register
+              </button>
+            </div>
+            <input
+              type="email"
+              value={authDraft.email}
+              onChange={(event) => setAuthDraft({ ...authDraft, email: event.target.value })}
+              placeholder="Email"
+              autoComplete="email"
+            />
+            {authMode === 'register' && (
+              <input
+                value={authDraft.displayName}
+                onChange={(event) => setAuthDraft({ ...authDraft, displayName: event.target.value })}
+                placeholder="Display name"
+                autoComplete="name"
+              />
+            )}
+            <input
+              type="password"
+              value={authDraft.password}
+              onChange={(event) => setAuthDraft({ ...authDraft, password: event.target.value })}
+              placeholder="Password"
+              autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+            />
+            <button type="submit">{authMode === 'register' ? 'Create account' : 'Sign in'}</button>
+            {authMode === 'login' && (
+              <button type="button" className="text-button" onClick={handleResendVerification}>
+                Resend verification email
+              </button>
+            )}
+          </form>
+          {(message || error) && <p className={`auth-message ${error ? 'error' : ''}`}>{error || message}</p>}
+        </section>
+      </main>
+    );
+  }
+
+  if (!mapRouteMatch) {
+    return (
+      <main className="dashboard-page">
+        <header className="dashboard-header">
+          <div>
+            <h1>Campaign Dashboard</h1>
+            <p>Signed in as {authUser.displayName}</p>
+          </div>
+          <button type="button" onClick={handleLogout}>Sign out</button>
+        </header>
+
+        <section className="dashboard-layout">
+          <form className="dashboard-create" onSubmit={handleCreateCampaign}>
+            <strong>New Campaign</strong>
+            <input
+              value={campaignDraft.name}
+              onChange={(event) => setCampaignDraft({ name: event.target.value })}
+              placeholder="Campaign name"
+            />
+            <button type="submit">Create campaign</button>
+          </form>
+
+          <section className="campaign-list">
+            <h2>Your Campaigns</h2>
+            {campaigns.map((campaign) => (
+              <article className="campaign-card" key={campaign.id}>
+                <div className="campaign-card-header">
+                  <div>
+                    <h3>{campaign.name}</h3>
+                    <p>{campaign.role === 'owner' ? 'Owner' : 'Invited player'} · {campaign.mapCount} maps</p>
+                  </div>
+                </div>
+
+                {campaign.role === 'owner' && (
+                  <div className="campaign-tools">
+                    <div className="inline-form">
+                      <input
+                        value={campaignMemberDraft[campaign.id] || ''}
+                        onChange={(event) => setCampaignMemberDraft((current) => ({ ...current, [campaign.id]: event.target.value }))}
+                        placeholder="Invite user id"
+                      />
+                      <button type="button" onClick={() => handleInviteCampaignMember(campaign.id)}>Invite</button>
+                    </div>
+                    <div className="inline-form">
+                      <input
+                        value={campaignMapDraft[campaign.id]?.mapName || ''}
+                        onChange={(event) => setCampaignMapDraft((current) => ({
+                          ...current,
+                          [campaign.id]: { ...(current[campaign.id] || {}), mapName: event.target.value }
+                        }))}
+                        placeholder="New map name"
+                      />
+                      <input
+                        value={campaignMapDraft[campaign.id]?.gridWidth || 40}
+                        onChange={(event) => setCampaignMapDraft((current) => ({
+                          ...current,
+                          [campaign.id]: { ...(current[campaign.id] || {}), gridWidth: event.target.value }
+                        }))}
+                        inputMode="numeric"
+                        aria-label="Map width"
+                      />
+                      <input
+                        value={campaignMapDraft[campaign.id]?.gridHeight || 40}
+                        onChange={(event) => setCampaignMapDraft((current) => ({
+                          ...current,
+                          [campaign.id]: { ...(current[campaign.id] || {}), gridHeight: event.target.value }
+                        }))}
+                        inputMode="numeric"
+                        aria-label="Map height"
+                      />
+                      <button type="button" onClick={() => handleCreateCampaignMap(campaign.id)}>Create map</button>
+                    </div>
+                    <small>Members: {campaign.members.length ? campaign.members.join(', ') : 'No invited players yet'}</small>
+                  </div>
+                )}
+
+                <div className="dashboard-map-list">
+                  {campaign.maps.map((map) => (
+                    <a key={map.id} href={`/maps/${map.id}`}>
+                      <span>{map.name}</span>
+                      <small>{map.playerVisible ? 'Visible to players' : map.invited ? 'Specifically invited' : 'Hidden'}</small>
+                    </a>
+                  ))}
+                  {!campaign.maps.length && <p>No maps available.</p>}
+                </div>
+              </article>
+            ))}
+            {!campaigns.length && <p className="empty-state">Create a campaign to get started.</p>}
+          </section>
+        </section>
+
+        {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
+      </main>
+    );
+  }
+
   return (
     <main className="app">
       <header className="topbar">
@@ -525,19 +982,64 @@ function App() {
           <p>Node.js + MariaDB + React prototype</p>
         </div>
         <div className="topbar-actions">
-          <label className="viewer-control">
-            <span>Viewer ID</span>
-            <input
-              value={viewerUserId}
-              onChange={(event) => {
-                const nextViewerUserId = event.target.value;
-                setViewerUserIdState(nextViewerUserId);
-                setViewerUserId(nextViewerUserId);
-              }}
-              onBlur={() => refreshMaps()}
-              placeholder="Chummer user id"
-            />
-          </label>
+          {authUser ? (
+            <div className="account-panel">
+              <span>Signed in as</span>
+              <strong>{authUser.displayName}</strong>
+              <small>{authUser.email}</small>
+              <button type="button" onClick={handleLogout}>Sign out</button>
+            </div>
+          ) : (
+            <form className="auth-form" onSubmit={handleAuthSubmit}>
+              <div className="auth-mode">
+                <button
+                  type="button"
+                  className={authMode === 'login' ? 'selected' : ''}
+                  onClick={() => setAuthMode('login')}
+                >
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  className={authMode === 'register' ? 'selected' : ''}
+                  onClick={() => setAuthMode('register')}
+                >
+                  Register
+                </button>
+              </div>
+              <input
+                type="email"
+                value={authDraft.email}
+                onChange={(event) => setAuthDraft({ ...authDraft, email: event.target.value })}
+                placeholder="Email"
+                autoComplete="email"
+              />
+              {authMode === 'register' && (
+                <input
+                  value={authDraft.displayName}
+                  onChange={(event) => setAuthDraft({ ...authDraft, displayName: event.target.value })}
+                  placeholder="Display name"
+                  autoComplete="name"
+                />
+              )}
+              <input
+                type="password"
+                value={authDraft.password}
+                onChange={(event) => setAuthDraft({ ...authDraft, password: event.target.value })}
+                placeholder="Password"
+                autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+              />
+              {authMode === 'register' && authConfig.recaptchaSiteKey && authConfig.recaptchaType === 'v2' && (
+                <div className="recaptcha-control" ref={recaptchaRef} />
+              )}
+              <button type="submit">{authMode === 'register' ? 'Create account' : 'Sign in'}</button>
+              {authMode === 'login' && (
+                <button type="button" className="text-button" onClick={handleResendVerification}>
+                  Resend verification email
+                </button>
+              )}
+            </form>
+          )}
           <div className="panel-switches" aria-label="Panel visibility">
             <button
               type="button"
@@ -576,7 +1078,7 @@ function App() {
         ].filter(Boolean).join(' ')}
       >
         <nav className="sidebar">
-          {permissions.canCreateMaps && (
+          {viewerUserId && (
           <form className="create-form" onSubmit={handleCreateMap}>
             <strong>New Map</strong>
             <input
@@ -622,6 +1124,55 @@ function App() {
               );
             })}
           </div>
+
+          {activeMap && (
+            <section className="share-panel">
+              <strong>Map Access</strong>
+              {activeMap.campaign && <small>Campaign: {activeMap.campaign.name}</small>}
+              <small>Owner: {activeMap.ownerUserId || 'Legacy open map'}</small>
+              {permissions.canEditMaps && activeMap.campaignId && (
+                <>
+                  <button type="button" onClick={handleToggleMapVisibility}>
+                    {activeMap.playerVisible ? 'Hide from campaign players' : 'Show to campaign players'}
+                  </button>
+                  <form onSubmit={handleInviteMapUser}>
+                    <input
+                      value={mapInviteDraft}
+                      onChange={(event) => setMapInviteDraft(event.target.value)}
+                      placeholder="Campaign member user id"
+                    />
+                    <button type="submit">Invite to map</button>
+                  </form>
+                  <small>
+                    Map-only invites: {(activeMap.invitedUserIds || []).length ? activeMap.invitedUserIds.join(', ') : 'None'}
+                  </small>
+                </>
+              )}
+              {permissions.canShareMap && (
+                <form onSubmit={handleShareMap}>
+                  <input
+                    value={shareUserId}
+                    onChange={(event) => setShareUserId(event.target.value)}
+                    placeholder="User id to share"
+                  />
+                  <button type="submit">Share</button>
+                </form>
+              )}
+              <div className="share-list">
+                {(activeMap.sharedUserIds || []).map((userId) => (
+                  <span key={userId}>
+                    {userId}
+                    {permissions.canShareMap && (
+                      <button type="button" onClick={() => handleUnshareMap(userId)} aria-label={`Remove ${userId}`}>
+                        Remove
+                      </button>
+                    )}
+                  </span>
+                ))}
+                {!(activeMap.sharedUserIds || []).length && <small>No shared users</small>}
+              </div>
+            </section>
+          )}
         </nav>
 
         <section className={`map-panel ${panels.top ? '' : 'top-panel-collapsed'}`}>
@@ -844,6 +1395,7 @@ function App() {
                 selectedEntityId={selectedEntityId}
                 tiles={tiles}
                 canManageEntities={permissions.canManageEntities}
+                canCreateEntities={permissions.canCreateEntities}
                 canEditEntity={(entity) => canControlEntity(entity, entities, viewerUserId, permissions)}
                 onAdd={handleAddEntity}
                 onUpdate={handleUpdateEntity}
@@ -906,6 +1458,60 @@ function canControlEntity(entity, entities, viewerUserId, permissions) {
 
 function isEntityPatch(patch) {
   return Object.keys(patch).every((key) => ['hp', 'maxHp', 'x', 'y'].includes(key));
+}
+
+async function getRecaptchaToken(config, widgetId) {
+  if (!config.requireRecaptcha) return '';
+  const siteKey = config.recaptchaSiteKey;
+  if (!siteKey) throw new Error('reCAPTCHA is required but no site key is configured.');
+
+  if (config.recaptchaType === 'v2') {
+    return window.grecaptcha?.getResponse?.(widgetId) || '';
+  }
+
+  await loadRecaptchaScript(siteKey, 'v3');
+
+  return new Promise((resolve, reject) => {
+    window.grecaptcha.ready(() => {
+      if (!window.grecaptcha?.execute) {
+        reject(new Error('reCAPTCHA v3 did not load correctly. Refresh the page and try again.'));
+        return;
+      }
+      window.grecaptcha.execute(siteKey, { action: config.recaptchaAction || 'register' }).then(resolve).catch(reject);
+    });
+  });
+}
+
+function loadRecaptchaScript(siteKey, type = 'v2') {
+  const src = type === 'v3'
+    ? `https://www.google.com/recaptcha/api.js?render=${encodeURIComponent(siteKey)}`
+    : 'https://www.google.com/recaptcha/api.js?render=explicit';
+
+  if (type === 'v3' && window.grecaptcha?.execute) return Promise.resolve();
+  if (type === 'v2' && window.grecaptcha?.render) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-pbphud-recaptcha="true"]');
+    if (existing) {
+      if (existing.src !== src) {
+        existing.remove();
+      } else {
+        existing.addEventListener('load', () => resolve(), { once: true });
+        existing.addEventListener('error', reject, { once: true });
+        if (window.grecaptcha) resolve();
+        return;
+      }
+    }
+
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.defer = true;
+    script.dataset.pbphudRecaptcha = 'true';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Could not load reCAPTCHA from Google.'));
+    document.head.appendChild(script);
+  });
 }
 
 function PaintIcon() {

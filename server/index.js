@@ -6,6 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkDatabase } from './db.js';
 import { config } from './env.js';
+import { attachUser } from './auth.js';
+import { authRouter } from './routes/auth.js';
+import { campaignsRouter } from './routes/campaigns.js';
 import { mapsRouter } from './routes/maps.js';
 import { assetsRouter } from './routes/assets.js';
 import { integrationsRouter } from './routes/integrations.js';
@@ -30,6 +33,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan(config.nodeEnv === 'production' ? 'combined' : 'dev'));
+app.use(attachUser);
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
@@ -45,8 +49,10 @@ app.get('/api/db/health', async (_req, res, next) => {
 });
 
 app.use('/api/maps', mapsRouter);
+app.use('/api/campaigns', campaignsRouter);
 app.use('/api/assets', assetsRouter);
 app.use('/api/integrations', integrationsRouter);
+app.use('/api/auth', authRouter);
 app.use('/tiles', express.static(config.tileAssetDir, {
   immutable: true,
   maxAge: '7d',
