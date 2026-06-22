@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PBPHUD Fantasy Forum + VTT Theme</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="PBPHUD home">
+        <span class="brand-mark">P</span>
+        <span>
+          <strong>PBPHUD</strong>
+          <small>Play-by-post RPG hub</small>
+        </span>
+      </a>
+      <nav class="main-nav" aria-label="Theme sections">
+        <a href="#features">Features</a>
+        <a href="#auth">Login</a>
+        <a href="#dashboard">Dashboard</a>
+        <a href="#forums">Forums</a>
+        <a href="#vtt">VTT</a>
+      </nav>
+      <a class="button button-primary" href="#auth">Start a campaign</a>
+    </header>
+
+    <main id="top">
+      <section class="hero section-band">
+        <div class="hero-copy">
+          <p class="eyebrow">Fantasy forum and virtual tabletop theme</p>
+          <h1>Gather the party between posts, maps, and moments.</h1>
+          <p class="hero-lede">
+            A clean, responsive interface for play-by-post roleplaying:
+            immersive where it should be, quiet where the table needs room.
+          </p>
+          <div class="button-row">
+            <a class="button button-primary" href="#forums">View forum style</a>
+            <a class="button button-ghost" href="#vtt">Preview VTT</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section-layout feature-layout">
+        <div class="section-heading">
+          <p class="eyebrow">Site features</p>
+          <h2>Built for slow-burn adventures.</h2>
+          <p>
+            The system uses a high-contrast fantasy shell, readable post
+            surfaces, and compact controls that stay comfortable on phones,
+            tablets, and desktop maps.
+          </p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <span class="feature-icon">01</span>
+            <h3>Campaign splash</h3>
+            <p>Hero media, feature callouts, and direct routes into login, registration, and active games.</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">02</span>
+            <h3>Account flow</h3>
+            <p>Paired login and registration panels with clear validation states and generous touch targets.</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">03</span>
+            <h3>Forum reading</h3>
+            <p>Thread lists, badges, author metadata, and post actions that feel familiar to classic forums.</p>
+          </article>
+          <article class="feature-card">
+            <span class="feature-icon">04</span>
+            <h3>Tabletop space</h3>
+            <p>A map-first VTT layout with restrained toolbars and a pared-down forum tab for live reference.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="auth" class="section-layout auth-layout">
+        <div class="section-heading">
+          <p class="eyebrow">Login and registration</p>
+          <h2>Warm, direct, and low-friction.</h2>
+          <p>
+            The auth page keeps fantasy flavor in the border work and color
+            treatment while leaving the form itself simple and predictable.
+          </p>
+        </div>
+        <div class="auth-panel">
+          <div class="auth-tabs" aria-label="Authentication options">
+            <button class="tab is-active">Login</button>
+            <button class="tab">Register</button>
+          </div>
+          <form class="form-stack">
+            <label>
+              Email or username
+              <input type="text" placeholder="ranger@campaign.net">
+            </label>
+            <label>
+              Password
+              <input type="password" placeholder="Enter password">
+            </label>
+            <div class="form-options">
+              <label class="check-row">
+                <input type="checkbox" checked>
+                Remember me
+              </label>
+              <a href="#">Forgot password?</a>
+            </div>
+            <button class="button button-primary" type="button">Enter the hall</button>
+            <p class="form-note">New players can register from the second tab without leaving this page.</p>
+          </form>
+        </div>
+      </section>
+
+      <section id="dashboard" class="dashboard-page theme-dashboard-preview">
+        <header class="dashboard-header">
+          <div>
+            <h1>Campaign Dashboard</h1>
+            <p>Signed in as GickerLDS</p>
+          </div>
+          <button>Sign out</button>
+        </header>
+        <div class="dashboard-layout">
+          <form class="dashboard-create">
+            <strong>New Campaign</strong>
+            <input type="text" placeholder="Campaign name">
+            <button type="button" class="button-primary">Create campaign</button>
+          </form>
+
+          <section class="campaign-list">
+            <h2>Your Campaigns</h2>
+            <article class="campaign-card">
+              <div class="campaign-card-header">
+                <div>
+                  <h3>Chains of Destiny</h3>
+                  <p>Owner - 1 maps</p>
+                </div>
+                <button>Forums</button>
+              </div>
+              <div class="campaign-tools">
+                <div class="inline-form">
+                  <input type="text" placeholder="Invite user id">
+                  <button type="button">Invite</button>
+                </div>
+                <div class="inline-form">
+                  <input type="text" placeholder="New map name">
+                  <input type="text" value="40" aria-label="Map width">
+                  <input type="text" value="40" aria-label="Map height">
+                  <button type="button" class="button-primary">Create map</button>
+                </div>
+              </div>
+              <p><strong>Members:</strong> No invited players yet</p>
+              <div class="dashboard-map-list">
+                <a href="#vtt">
+                  <span>Club Stinky</span>
+                  <small>Hidden</small>
+                </a>
+              </div>
+            </article>
+          </section>
+        </div>
+        <p class="message">Loaded campaign-3/Club Stinky</p>
+      </section>
+
+      <section id="forums" class="section-layout forum-layout">
+        <div class="section-heading">
+          <p class="eyebrow">Forum components</p>
+          <h2>Classic forum rhythm, cleaner reading.</h2>
+          <p>
+            Forum actions use styled buttons, clear status tags, and author
+            details that work well for long-form posts and campaign archives.
+          </p>
+        </div>
+
+        <div class="forum-shell">
+          <div class="forum-toolbar">
+            <div>
+              <strong>Campaign: The Ashen Road</strong>
+              <span>3 active threads</span>
+            </div>
+            <div class="button-row">
+              <button class="button button-small button-muted">Search</button>
+              <button class="button button-small button-primary">New thread</button>
+            </div>
+          </div>
+
+          <div class="thread-list" aria-label="Forum thread list">
+            <article class="thread-row is-unread">
+              <div class="thread-status">New</div>
+              <div>
+                <h3>Chapter 4: Lanterns Under Blackpine</h3>
+                <p>Last post by Mira Dawnwatch, 12 minutes ago</p>
+              </div>
+              <div class="thread-count">42 replies</div>
+            </article>
+            <article class="thread-row">
+              <div class="thread-status">IC</div>
+              <div>
+                <h3>Downtime: Letters, rumors, and supply rolls</h3>
+                <p>Last post by GM Rowan, yesterday</p>
+              </div>
+              <div class="thread-count">18 replies</div>
+            </article>
+            <article class="thread-row">
+              <div class="thread-status">OOC</div>
+              <div>
+                <h3>Rules questions and marching order</h3>
+                <p>Last post by Thorn, 2 days ago</p>
+              </div>
+              <div class="thread-count">9 replies</div>
+            </article>
+          </div>
+
+          <article class="post-preview">
+            <aside class="post-author">
+              <div class="avatar">M</div>
+              <strong>Mira Dawnwatch</strong>
+              <span>Level 5 Ranger</span>
+            </aside>
+            <div class="post-body">
+              <div class="post-meta">
+                <span>Posted in Chapter 4</span>
+                <span>#128</span>
+              </div>
+              <p>
+                Mira kneels beside the old mile marker, brushing wet pine
+                needles away from the carved sigil. "This road was used
+                recently. Not by merchants."
+              </p>
+              <div class="post-actions">
+                <button class="button button-small button-muted">Quote</button>
+                <button class="button button-small button-muted">Edit</button>
+                <button class="button button-small button-primary">Reply</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="vtt" class="vtt-section">
+        <div class="vtt-topbar">
+          <div class="vtt-title">
+            <strong>Blackpine Ford</strong>
+            <span>Round 3 - Player turn</span>
+          </div>
+          <div class="vtt-actions">
+            <button class="tool-button is-active" title="Select">Select</button>
+            <button class="tool-button" title="Measure">Measure</button>
+            <button class="tool-button" title="Draw">Draw</button>
+            <button class="tool-button" title="Fog">Fog</button>
+            <button class="button button-small button-primary">Save map</button>
+          </div>
+        </div>
+
+        <div class="vtt-workspace">
+          <aside class="map-tools" aria-label="Map tools">
+            <button class="tool-tile is-active">Pointer</button>
+            <button class="tool-tile">Token</button>
+            <button class="tool-tile">Ping</button>
+            <button class="tool-tile">Grid</button>
+            <button class="tool-tile">Layer</button>
+            <button class="tool-tile">Notes</button>
+          </aside>
+
+          <div class="map-stage" aria-label="Map grid preview">
+            <div class="map-token token-a">A</div>
+            <div class="map-token token-b">B</div>
+            <div class="map-token token-c">C</div>
+            <div class="distance-ruler">35 ft</div>
+          </div>
+
+          <aside class="vtt-forum-tab" aria-label="Pared-down forum tab">
+            <div class="tab-header">
+              <strong>Table thread</strong>
+              <button class="button button-small button-muted">Pop out</button>
+            </div>
+            <article class="mini-post">
+              <strong>GM Rowan</strong>
+              <p>The ford is slick with rain. Enemies have half cover behind the fallen cart.</p>
+            </article>
+            <article class="mini-post">
+              <strong>Mira</strong>
+              <p>I mark the closest raider and move to the east bank.</p>
+            </article>
+            <label class="quick-reply">
+              Quick reply
+              <textarea rows="4" placeholder="Post an action..."></textarea>
+            </label>
+            <button class="button button-primary">Post action</button>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
