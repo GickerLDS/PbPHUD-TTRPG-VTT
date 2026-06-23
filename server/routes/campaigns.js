@@ -56,6 +56,40 @@ const forumThreadMapSchema = z.object({
   mapId: z.number().int().positive().nullable()
 });
 
+campaignsRouter.get('/:campaignId/cast/:castId/portrait', async (req, res, next) => {
+  try {
+    const rows = await query(
+      `SELECT portrait_url AS portraitUrl
+       FROM campaign_cast
+       WHERE campaign_id = ? AND id = ?
+       LIMIT 1`,
+      [req.params.campaignId, req.params.castId]
+    );
+    const portraitUrl = rows[0]?.portraitUrl || '';
+    if (!portraitUrl) {
+      res.status(404).end();
+      return;
+    }
+
+    if (/^https?:\/\//i.test(portraitUrl)) {
+      res.redirect(portraitUrl);
+      return;
+    }
+
+    const dataImage = parseDataImage(portraitUrl);
+    if (!dataImage) {
+      res.status(404).end();
+      return;
+    }
+
+    res.setHeader('Content-Type', dataImage.mimeType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(dataImage.buffer);
+  } catch (error) {
+    next(error);
+  }
+});
+
 campaignsRouter.use((req, res, next) => {
   if (!req.user) {
     res.status(401).json({ error: 'Sign in required' });
@@ -722,6 +756,19 @@ function normalizePortraitUrl(value) {
   throw error;
 }
 
+function parseDataImage(value) {
+  const match = String(value || '').match(/^data:(image\/(?:png|jpe?g|gif|webp));base64,([a-z0-9+/=]+)$/i);
+  if (!match) return null;
+  return {
+    mimeType: match[1].toLowerCase(),
+    buffer: Buffer.from(match[2], 'base64')
+  };
+}
+
+function castPortraitPath(campaignId, castId) {
+  return `/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}/portrait`;
+}
+
 async function loadCampaignMap(campaignId, mapId) {
   const rows = await query(
     `SELECT id, map_name AS mapName FROM maps WHERE campaign_id = ? AND id = ? LIMIT 1`,
@@ -801,7 +848,7 @@ async function loadPostIdentities(campaignId, viewerUserId, isOwner) {
       id: `cast:${row.id}`,
       type,
       name: row.name,
-      image: row.portraitUrl || '',
+      image: row.portraitUrl ? castPortraitPath(campaignId, row.id) : '',
       subtitle: `${castTypeLabel(row.castType)} from The Cast`,
       source: {
         type: 'campaign-cast',

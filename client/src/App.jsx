@@ -121,6 +121,7 @@ function App() {
   const [dashboardCastCampaignId, setDashboardCastCampaignId] = useState(null);
   const [campaignCast, setCampaignCast] = useState({});
   const [campaignCastDraft, setCampaignCastDraft] = useState({});
+  const [portraitCrop, setPortraitCrop] = useState(null);
   const [campaignForumThreads, setCampaignForumThreads] = useState({});
   const [campaignPostIdentities, setCampaignPostIdentities] = useState({});
   const [campaignForumDraft, setCampaignForumDraft] = useState({});
@@ -629,8 +630,25 @@ function App() {
   async function handleCastPortraitFile(campaignId, entryId, file) {
     if (!file) return;
     try {
-      const portraitUrl = await readSquarePortraitFile(file);
-      updateCampaignCastDraft(campaignId, entryId, { portraitUrl });
+      const dataUrl = await readFileAsDataUrl(file);
+      const image = await loadImage(dataUrl);
+      if (image.naturalWidth === image.naturalHeight && image.naturalWidth <= 512) {
+        updateCampaignCastDraft(campaignId, entryId, { portraitUrl: dataUrl });
+        return;
+      }
+      setPortraitCrop(createPortraitCropState(campaignId, entryId, dataUrl, image));
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleApplyPortraitCrop() {
+    if (!portraitCrop) return;
+    try {
+      const portraitUrl = await cropPortraitToDataUrl(portraitCrop);
+      updateCampaignCastDraft(portraitCrop.campaignId, portraitCrop.entryId, { portraitUrl });
+      setPortraitCrop(null);
+      setError('');
     } catch (err) {
       showError(err);
     }
@@ -1504,6 +1522,15 @@ function App() {
           </section>
         </section>
 
+        {portraitCrop && (
+          <PortraitCropModal
+            crop={portraitCrop}
+            onChange={setPortraitCrop}
+            onCancel={() => setPortraitCrop(null)}
+            onApply={handleApplyPortraitCrop}
+          />
+        )}
+
         {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
         <SiteFooter />
       </main>
@@ -2020,22 +2047,65 @@ function getCastDraftKey(campaignId, entryId) {
   return `${campaignId}:${entryId}`;
 }
 
-async function readSquarePortraitFile(file) {
+function readFileAsDataUrl(file) {
   if (!file.type.startsWith('image/')) {
     throw new Error('Portrait upload must be an image');
   }
-  const dataUrl = await readFileAsDataUrl(file);
-  await validatePortraitSource(dataUrl);
-  return dataUrl;
-}
-
-function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
     reader.onerror = () => reject(new Error('Could not read portrait image'));
     reader.readAsDataURL(file);
   });
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Portrait image could not be loaded'));
+    image.src = src;
+  });
+}
+
+function createPortraitCropState(campaignId, entryId, src, image) {
+  const scale = 512 / Math.min(image.naturalWidth, image.naturalHeight);
+  const scaledWidth = Math.round(image.naturalWidth * scale);
+  const scaledHeight = Math.round(image.naturalHeight * scale);
+  const maxOffsetX = Math.max(0, scaledWidth - 512);
+  const maxOffsetY = Math.max(0, scaledHeight - 512);
+  return {
+    campaignId,
+    entryId,
+    src,
+    imageWidth: image.naturalWidth,
+    imageHeight: image.naturalHeight,
+    scale,
+    scaledWidth,
+    scaledHeight,
+    offsetX: Math.round(maxOffsetX / 2),
+    offsetY: Math.round(maxOffsetY / 2),
+    maxOffsetX,
+    maxOffsetY
+  };
+}
+
+async function cropPortraitToDataUrl(crop) {
+  const image = await loadImage(crop.src);
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#fffaf0';
+  context.fillRect(0, 0, 512, 512);
+  context.drawImage(
+    image,
+    -crop.offsetX,
+    -crop.offsetY,
+    crop.scaledWidth,
+    crop.scaledHeight
+  );
+  return canvas.toDataURL('image/png');
 }
 
 function validatePortraitSource(src) {
@@ -2540,6 +2610,75 @@ function CastPortraitControls({ campaignId, entryId, portraitUrl, onDraftChange,
   );
 }
 
+function PortraitCropModal({ crop, onChange, onCancel, onApply }) {
+  const previewSize = 280;
+  const previewScale = previewSize / 512;
+  const previewImageStyle = {
+    width: `${crop.scaledWidth * previewScale}px`,
+    height: `${crop.scaledHeight * previewScale}px`,
+    transform: `translate(${-crop.offsetX * previewScale}px, ${-crop.offsetY * previewScale}px)`
+  };
+
+  function updateOffset(key, value) {
+    const maxKey = key === 'offsetX' ? 'maxOffsetX' : 'maxOffsetY';
+    onChange((current) => ({
+      ...current,
+      [key]: clampNumber(value, 0, current[maxKey], 0)
+    }));
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="portrait-crop-modal" role="dialog" aria-modal="true" aria-label="Crop portrait image">
+        <header>
+          <div>
+            <strong>Crop portrait</strong>
+            <small>Shortest edge has been scaled to 512px. Position the square crop, then apply.</small>
+          </div>
+          <button type="button" onClick={onCancel}>Cancel</button>
+        </header>
+
+        <div className="portrait-crop-layout">
+          <div className="portrait-crop-preview" style={{ width: previewSize, height: previewSize }}>
+            <img src={crop.src} alt="" style={previewImageStyle} />
+          </div>
+          <div className="portrait-crop-controls">
+            <small>
+              Source: {crop.imageWidth}x{crop.imageHeight}. Saved portrait: 512x512.
+            </small>
+            {crop.maxOffsetX > 0 && (
+              <label>
+                Horizontal position
+                <input
+                  type="range"
+                  min="0"
+                  max={crop.maxOffsetX}
+                  value={crop.offsetX}
+                  onChange={(event) => updateOffset('offsetX', event.target.value)}
+                />
+              </label>
+            )}
+            {crop.maxOffsetY > 0 && (
+              <label>
+                Vertical position
+                <input
+                  type="range"
+                  min="0"
+                  max={crop.maxOffsetY}
+                  value={crop.offsetY}
+                  onChange={(event) => updateOffset('offsetY', event.target.value)}
+                />
+              </label>
+            )}
+            {!crop.maxOffsetX && !crop.maxOffsetY && <small>This image is already square; it will be resized to 512x512.</small>}
+            <button type="button" onClick={onApply}>Apply portrait</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ForumPage({
   campaign,
   threads,
@@ -3005,6 +3144,12 @@ function BBCodeEditor({ value, onChange, placeholder, postIdentities = [] }) {
     wrapSelection('[img]', '[/img]', url);
   }
 
+  function insertCenteredImage() {
+    const url = window.prompt('Enter image URL');
+    if (!url) return;
+    wrapSelection('[img=center]', '[/img]', url);
+  }
+
   function insertColor() {
     const color = window.prompt('Enter color name or hex code', '#2563eb');
     if (!color) return;
@@ -3095,6 +3240,7 @@ function BBCodeEditor({ value, onChange, placeholder, postIdentities = [] }) {
         <button type="button" onClick={insertUrl}>Link</button>
         <button type="button" onClick={insertEmail}>Email</button>
         <button type="button" onClick={insertImage}>Image</button>
+        <button type="button" onClick={insertCenteredImage}>Image Center</button>
         <button type="button" className="post-as-tool" onClick={insertPostAsBlock}>Post as</button>
         <button type="button" className="dice-tool" onClick={() => insertInlineCommand('/roll 1d20+0')}>/roll d20</button>
         <button type="button" className="dice-tool" onClick={() => insertInlineCommand('/sr 12')}>/sr dice pool</button>
@@ -3177,6 +3323,7 @@ function renderBbcode(input) {
     .replace(/\[email=([^\s\]]+@[^\s\]]+)\]([\s\S]*?)\[\/email\]/gi, '<a href="mailto:$1">$2</a>')
     .replace(/\[url\](https?:\/\/[^\s[]+?)\[\/url\]/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/\[url=(https?:\/\/[^\s\]]+?)\]([\s\S]*?)\[\/url\]/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$2</a>')
+    .replace(/\[img=center\](https?:\/\/[^\s[]+?)\[\/img\]/gi, '<img class="bbcode-image-center" src="$1" alt="" loading="lazy" />')
     .replace(/\[img\](https?:\/\/[^\s[]+?)\[\/img\]/gi, '<img src="$1" alt="" loading="lazy" />');
   html = renderCharacterBbcode(html);
   html = renderBbcodeLists(html);
@@ -3189,19 +3336,12 @@ function renderCharacterBbcode(html) {
   return html.replace(/\[character\s+([^\]]+)\]([\s\S]*?)\[\/character\]/gi, (_match, attrText, content) => {
     const attrs = parseBbcodeAttributes(attrText);
     const name = attrs.name || 'Character';
-    const subtitle = attrs.subtitle || (attrs.type === 'npc' ? 'NPC/Monster' : 'Character');
     const typeClass = attrs.type === 'npc' ? ' npc' : '';
     const safeImage = sanitizeImageSource(attrs.image || '');
     const portrait = safeImage
       ? `<img src="${escapeHtml(safeImage)}" alt="" loading="lazy" />`
       : `<span>${escapeHtml(name.slice(0, 2).toUpperCase())}</span>`;
-    return `<section class="character-post${typeClass}">
-      <aside class="character-portrait">${portrait}</aside>
-      <div class="character-post-content">
-        <header><strong>${escapeHtml(name)}</strong><small>${escapeHtml(subtitle)}</small></header>
-        <div class="bbcode-body">${content}</div>
-      </div>
-    </section>`;
+    return `<section class="character-post${typeClass}"><div class="character-post-content"><header><strong>${escapeHtml(name)}</strong></header><aside class="character-portrait">${portrait}</aside><div class="character-post-text">${content}</div></div></section>`;
   });
 }
 
