@@ -26,6 +26,39 @@ export async function inviteCampaignMember(campaignId, userId) {
   return parseResponse(response);
 }
 
+export async function listCampaignCast(campaignId) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast`, {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function createCampaignCast(campaignId, payload) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function updateCampaignCast(campaignId, castId, payload) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}`, {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function deleteCampaignCast(campaignId, castId) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}`, {
+    method: 'DELETE',
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
 export async function createCampaignMap(campaignId, payload) {
   const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/maps`, {
     method: 'POST',
@@ -60,6 +93,13 @@ export async function getForumThread(campaignId, threadId) {
   return parseResponse(response);
 }
 
+export async function listForumPostIdentities(campaignId) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/post-identities`, {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
 export async function createForumPost(campaignId, threadId, body) {
   const response = await fetch(
     `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts`,
@@ -67,6 +107,29 @@ export async function createForumPost(campaignId, threadId, body) {
       method: 'POST',
       headers: jsonHeaders(),
       body: JSON.stringify({ body })
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function updateForumPost(campaignId, threadId, postId, body) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`,
+    {
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ body })
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function deleteForumPost(campaignId, threadId, postId) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`,
+    {
+      method: 'DELETE',
+      headers: viewerHeaders()
     }
   );
   return parseResponse(response);

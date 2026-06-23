@@ -4,10 +4,13 @@ import {
   assignForumThreadMap,
   createEntity,
   createCampaign,
+  createCampaignCast,
   createCampaignMap,
   createForumPost,
   createForumThread,
   createMap,
+  deleteCampaignCast,
+  deleteForumPost,
   getAuthConfig,
   getCurrentUser,
   getForumThread,
@@ -17,6 +20,8 @@ import {
   inviteCampaignMember,
   inviteMapUser,
   listCampaigns,
+  listCampaignCast,
+  listForumPostIdentities,
   listForumThreads,
   listMaps,
   listTileAssets,
@@ -31,6 +36,8 @@ import {
   setMapVisibility,
   setViewerUserId,
   shareMap,
+  updateCampaignCast,
+  updateForumPost,
   unshareMap,
   verifyEmail
 } from './api.js';
@@ -111,7 +118,11 @@ function App() {
   const [campaignMemberDraft, setCampaignMemberDraft] = useState({});
   const [campaignMapDraft, setCampaignMapDraft] = useState({});
   const [dashboardForumCampaignId, setDashboardForumCampaignId] = useState(null);
+  const [dashboardCastCampaignId, setDashboardCastCampaignId] = useState(null);
+  const [campaignCast, setCampaignCast] = useState({});
+  const [campaignCastDraft, setCampaignCastDraft] = useState({});
   const [campaignForumThreads, setCampaignForumThreads] = useState({});
+  const [campaignPostIdentities, setCampaignPostIdentities] = useState({});
   const [campaignForumDraft, setCampaignForumDraft] = useState({});
   const [centerTab, setCenterTab] = useState('map');
   const [mapForumThreads, setMapForumThreads] = useState([]);
@@ -120,6 +131,7 @@ function App() {
   const [mapForumDraft, setMapForumDraft] = useState({ title: '', body: '' });
   const [forumPageThread, setForumPageThread] = useState(null);
   const [forumPageReplyDraft, setForumPageReplyDraft] = useState('');
+  const [editingPost, setEditingPost] = useState(null);
   const [mapInviteDraft, setMapInviteDraft] = useState('');
   const activeMapRef = useRef(null);
   const editorStateRef = useRef({
@@ -193,6 +205,7 @@ function App() {
     }
     if (forumRouteMatch?.[1]) {
       refreshCampaignForumThreads(forumRouteMatch[1]);
+      refreshCampaignPostIdentities(forumRouteMatch[1]);
     }
   }, [authUser?.id, path]);
 
@@ -284,6 +297,7 @@ function App() {
   useEffect(() => {
     if (centerTab !== 'forums' || !activeMap?.campaignId) return;
     refreshMapForumThreads();
+    refreshCampaignPostIdentities(activeMap.campaignId);
   }, [centerTab, activeMap?.id, activeMap?.campaignId]);
 
   useEffect(() => {
@@ -493,6 +507,7 @@ function App() {
       setMessage(`Invited ${userId}`);
       setError('');
       await refreshCampaigns();
+      if (dashboardCastCampaignId === campaignId) await refreshCampaignCast(campaignId);
     } catch (err) {
       showError(err);
     }
@@ -520,13 +535,120 @@ function App() {
   async function toggleCampaignForums(campaignId) {
     const nextCampaignId = dashboardForumCampaignId === campaignId ? null : campaignId;
     setDashboardForumCampaignId(nextCampaignId);
-    if (nextCampaignId) await refreshCampaignForumThreads(nextCampaignId);
+    if (nextCampaignId) {
+      await Promise.all([
+        refreshCampaignForumThreads(nextCampaignId),
+        refreshCampaignPostIdentities(nextCampaignId)
+      ]);
+    }
+  }
+
+  async function toggleCampaignCast(campaignId) {
+    const nextCampaignId = dashboardCastCampaignId === campaignId ? null : campaignId;
+    setDashboardCastCampaignId(nextCampaignId);
+    if (nextCampaignId) await refreshCampaignCast(nextCampaignId);
+  }
+
+  async function refreshCampaignCast(campaignId) {
+    try {
+      const data = await listCampaignCast(campaignId);
+      setCampaignCast((current) => ({ ...current, [campaignId]: data.cast }));
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleCreateCampaignCast(campaign) {
+    const key = getCastDraftKey(campaign.id, 'new');
+    const draft = campaignCastDraft[key] || {};
+    const name = String(draft.name || '').trim();
+    if (!name) return;
+    try {
+      if (draft.portraitUrl) await validatePortraitSource(draft.portraitUrl);
+      const data = await createCampaignCast(campaign.id, {
+        castType: draft.castType || 'npc',
+        name,
+        portraitUrl: draft.portraitUrl || '',
+        publicDescription: draft.publicDescription || '',
+        gmNotes: draft.gmNotes || '',
+        visibleToPlayers: draft.visibleToPlayers !== false
+      });
+      setCampaignCast((current) => ({ ...current, [campaign.id]: data.cast }));
+      setCampaignCastDraft((current) => ({
+        ...current,
+        [key]: { castType: 'npc', visibleToPlayers: true }
+      }));
+      setMessage(`Added ${name} to The Cast`);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleUpdateCampaignCast(campaignId, entry) {
+    const draft = campaignCastDraft[getCastDraftKey(campaignId, entry.id)] || entry;
+    const name = String(draft.name || '').trim();
+    if (!name) return;
+    try {
+      if (draft.portraitUrl) await validatePortraitSource(draft.portraitUrl);
+      const data = await updateCampaignCast(campaignId, entry.id, {
+        name,
+        portraitUrl: draft.portraitUrl || '',
+        publicDescription: draft.publicDescription || '',
+        gmNotes: draft.gmNotes || '',
+        visibleToPlayers: draft.visibleToPlayers !== false
+      });
+      setCampaignCast((current) => ({ ...current, [campaignId]: data.cast }));
+      setMessage(`Updated ${name}`);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleDeleteCampaignCast(campaignId, entry) {
+    if (!window.confirm(`Remove ${entry.name} from The Cast?`)) return;
+    try {
+      const data = await deleteCampaignCast(campaignId, entry.id);
+      setCampaignCast((current) => ({ ...current, [campaignId]: data.cast }));
+      setMessage(`Removed ${entry.name}`);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  function updateCampaignCastDraft(campaignId, entryId, patch) {
+    const key = getCastDraftKey(campaignId, entryId);
+    setCampaignCastDraft((current) => ({
+      ...current,
+      [key]: { ...(current[key] || {}), ...patch }
+    }));
+  }
+
+  async function handleCastPortraitFile(campaignId, entryId, file) {
+    if (!file) return;
+    try {
+      const portraitUrl = await readSquarePortraitFile(file);
+      updateCampaignCastDraft(campaignId, entryId, { portraitUrl });
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function refreshCampaignForumThreads(campaignId) {
     try {
       const data = await listForumThreads(campaignId);
       setCampaignForumThreads((current) => ({ ...current, [campaignId]: data.threads }));
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function refreshCampaignPostIdentities(campaignId) {
+    try {
+      const data = await listForumPostIdentities(campaignId);
+      setCampaignPostIdentities((current) => ({ ...current, [campaignId]: data.identities }));
     } catch (err) {
       showError(err);
     }
@@ -653,6 +775,49 @@ function App() {
       setMessage('Reply posted');
       setError('');
       await refreshCampaignForumThreads(campaignId);
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  function handleStartEditPost(post) {
+    setEditingPost({ postId: post.id, body: post.body || '' });
+  }
+
+  async function handleSaveEditedPost(event, campaignId, threadId, context = 'forum') {
+    event.preventDefault();
+    if (!editingPost?.postId || !editingPost.body.trim()) return;
+    try {
+      const data = await updateForumPost(campaignId, threadId, editingPost.postId, editingPost.body);
+      if (context === 'map') {
+        setSelectedForumThread(data.thread);
+        await refreshMapForumThreads();
+      } else {
+        setForumPageThread(data.thread);
+        await refreshCampaignForumThreads(campaignId);
+      }
+      setEditingPost(null);
+      setMessage('Post updated. Existing dice rolls were preserved.');
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleDeleteForumPost(campaignId, threadId, postId, context = 'forum') {
+    if (!window.confirm('Delete this post text? Any dice rolls attached to it will remain visible.')) return;
+    try {
+      const data = await deleteForumPost(campaignId, threadId, postId);
+      if (context === 'map') {
+        setSelectedForumThread(data.thread);
+        await refreshMapForumThreads();
+      } else {
+        setForumPageThread(data.thread);
+        await refreshCampaignForumThreads(campaignId);
+      }
+      setEditingPost(null);
+      setMessage('Post deleted. Dice rolls remain in the thread.');
+      setError('');
     } catch (err) {
       showError(err);
     }
@@ -1131,6 +1296,7 @@ function App() {
         campaign={campaign}
         threads={campaignForumThreads[campaignId] || []}
         selectedThread={forumPageThread}
+        postIdentities={campaignPostIdentities[campaignId] || []}
         threadDraft={campaignForumDraft[campaignId] || {}}
         replyDraft={forumPageReplyDraft}
         message={message}
@@ -1147,6 +1313,12 @@ function App() {
         onAssignThread={(threadId, mapId) => campaign && handleAssignCampaignForumThread(campaign, threadId, mapId)}
         onReplyDraftChange={setForumPageReplyDraft}
         onCreatePost={(event) => handleCreateCampaignForumPost(event, campaignId)}
+        editingPost={editingPost}
+        onStartEditPost={handleStartEditPost}
+        onEditDraftChange={(body) => setEditingPost((current) => ({ ...current, body }))}
+        onCancelEditPost={() => setEditingPost(null)}
+        onSaveEditPost={(event, threadId) => handleSaveEditedPost(event, campaignId, threadId, 'forum')}
+        onDeletePost={(threadId, postId) => handleDeleteForumPost(campaignId, threadId, postId, 'forum')}
       />
     );
   }
@@ -1183,6 +1355,9 @@ function App() {
                   </div>
                   <div className="button-row">
                     <a className="button" href={`/campaigns/${campaign.id}/forums`}>Open forums</a>
+                    <button type="button" onClick={() => toggleCampaignCast(campaign.id)}>
+                      {dashboardCastCampaignId === campaign.id ? 'Hide cast' : 'The Cast'}
+                    </button>
                     <button type="button" onClick={() => toggleCampaignForums(campaign.id)}>
                       {dashboardForumCampaignId === campaign.id ? 'Hide preview' : 'Preview'}
                     </button>
@@ -1230,6 +1405,19 @@ function App() {
                     </div>
                     <small>Members: {campaign.members.length ? campaign.members.join(', ') : 'No invited players yet'}</small>
                   </div>
+                )}
+
+                {dashboardCastCampaignId === campaign.id && (
+                  <CampaignCastPanel
+                    campaign={campaign}
+                    cast={campaignCast[campaign.id] || []}
+                    drafts={campaignCastDraft}
+                    onDraftChange={updateCampaignCastDraft}
+                    onPortraitFile={handleCastPortraitFile}
+                    onCreate={() => handleCreateCampaignCast(campaign)}
+                    onSave={(entry) => handleUpdateCampaignCast(campaign.id, entry)}
+                    onDelete={(entry) => handleDeleteCampaignCast(campaign.id, entry)}
+                  />
                 )}
 
                 {dashboardForumCampaignId === campaign.id && (
@@ -1293,6 +1481,7 @@ function App() {
                           ...current,
                           [campaign.id]: { ...(current[campaign.id] || {}), body: value }
                         }))}
+                        postIdentities={campaignPostIdentities[campaign.id] || []}
                         placeholder="First post with BBCode"
                       />
                       <button type="button" onClick={() => handleCreateCampaignForumThread(campaign)}>Create thread</button>
@@ -1729,6 +1918,7 @@ function App() {
               activeMap={activeMap}
               threads={mapForumThreads}
               selectedThread={selectedForumThread}
+              postIdentities={campaignPostIdentities[activeMap?.campaignId] || []}
               threadDraft={mapForumDraft}
               replyDraft={forumReplyDraft}
               onThreadDraftChange={setMapForumDraft}
@@ -1736,6 +1926,13 @@ function App() {
               onCreateThread={handleCreateMapForumThread}
               onSelectThread={handleSelectMapForumThread}
               onCreatePost={handleCreateMapForumPost}
+              viewerUserId={viewerUserId}
+              editingPost={editingPost}
+              onStartEditPost={handleStartEditPost}
+              onEditDraftChange={(body) => setEditingPost((current) => ({ ...current, body }))}
+              onCancelEditPost={() => setEditingPost(null)}
+              onSaveEditPost={(event, threadId) => handleSaveEditedPost(event, activeMap.campaignId, threadId, 'map')}
+              onDeletePost={(threadId, postId) => handleDeleteForumPost(activeMap.campaignId, threadId, postId, 'map')}
             />
           )}
         </section>
@@ -1817,6 +2014,47 @@ function parseGridDimension(value, fallback = null) {
   const number = Number(trimmed);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(5, Math.min(99, Math.trunc(number)));
+}
+
+function getCastDraftKey(campaignId, entryId) {
+  return `${campaignId}:${entryId}`;
+}
+
+async function readSquarePortraitFile(file) {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Portrait upload must be an image');
+  }
+  const dataUrl = await readFileAsDataUrl(file);
+  await validatePortraitSource(dataUrl);
+  return dataUrl;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Could not read portrait image'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function validatePortraitSource(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      if (image.naturalWidth !== image.naturalHeight) {
+        reject(new Error('Portrait must be square'));
+        return;
+      }
+      if (image.naturalWidth > 512 || image.naturalHeight > 512) {
+        reject(new Error('Portrait must be 512x512 or smaller'));
+        return;
+      }
+      resolve();
+    };
+    image.onerror = () => reject(new Error('Portrait image could not be loaded for validation'));
+    image.src = src;
+  });
 }
 
 function readLegacyStoredJson(key, fallback) {
@@ -2085,10 +2323,228 @@ function ContactPage({
   );
 }
 
+function CampaignCastPanel({
+  campaign,
+  cast,
+  drafts,
+  onDraftChange,
+  onPortraitFile,
+  onCreate,
+  onSave,
+  onDelete
+}) {
+  const newKey = getCastDraftKey(campaign.id, 'new');
+  const newDraft = drafts[newKey] || { castType: 'npc', visibleToPlayers: true };
+  const grouped = {
+    player: cast.filter((entry) => entry.castType === 'player'),
+    npc: cast.filter((entry) => entry.castType === 'npc'),
+    monster: cast.filter((entry) => entry.castType === 'monster')
+  };
+
+  return (
+    <section className="campaign-cast-panel">
+      <div className="campaign-forum-header">
+        <strong>The Cast</strong>
+        <small>Players always show. NPCs and monsters can be hidden from players by the GM.</small>
+      </div>
+
+      <div className="cast-columns">
+        <CastGroup
+          title="Players"
+          entries={grouped.player}
+          campaign={campaign}
+          drafts={drafts}
+          onDraftChange={onDraftChange}
+          onPortraitFile={onPortraitFile}
+          onSave={onSave}
+          onDelete={onDelete}
+        />
+        <CastGroup
+          title="NPCs"
+          entries={grouped.npc}
+          campaign={campaign}
+          drafts={drafts}
+          onDraftChange={onDraftChange}
+          onPortraitFile={onPortraitFile}
+          onSave={onSave}
+          onDelete={onDelete}
+        />
+        <CastGroup
+          title="Monsters"
+          entries={grouped.monster}
+          campaign={campaign}
+          drafts={drafts}
+          onDraftChange={onDraftChange}
+          onPortraitFile={onPortraitFile}
+          onSave={onSave}
+          onDelete={onDelete}
+        />
+      </div>
+
+      {campaign.role === 'owner' && (
+        <div className="cast-create-card">
+          <strong>Add NPC or monster</strong>
+          <div className="inline-form">
+            <select
+              value={newDraft.castType || 'npc'}
+              onChange={(event) => onDraftChange(campaign.id, 'new', { castType: event.target.value })}
+            >
+              <option value="npc">NPC</option>
+              <option value="monster">Monster</option>
+            </select>
+            <input
+              value={newDraft.name || ''}
+              onChange={(event) => onDraftChange(campaign.id, 'new', { name: event.target.value })}
+              placeholder="Name"
+            />
+            <label className="check-control">
+              <input
+                type="checkbox"
+                checked={newDraft.visibleToPlayers !== false}
+                onChange={(event) => onDraftChange(campaign.id, 'new', { visibleToPlayers: event.target.checked })}
+              />
+              Show to players
+            </label>
+          </div>
+          <CastPortraitControls
+            campaignId={campaign.id}
+            entryId="new"
+            portraitUrl={newDraft.portraitUrl || ''}
+            onDraftChange={onDraftChange}
+            onPortraitFile={onPortraitFile}
+          />
+          <textarea
+            value={newDraft.publicDescription || ''}
+            onChange={(event) => onDraftChange(campaign.id, 'new', { publicDescription: event.target.value })}
+            placeholder="Description shown to players"
+            rows={3}
+          />
+          <textarea
+            value={newDraft.gmNotes || ''}
+            onChange={(event) => onDraftChange(campaign.id, 'new', { gmNotes: event.target.value })}
+            placeholder="GM notes"
+            rows={3}
+          />
+          <button type="button" onClick={onCreate}>Add to The Cast</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CastGroup({ title, entries, campaign, drafts, onDraftChange, onPortraitFile, onSave, onDelete }) {
+  return (
+    <section className="cast-group">
+      <h4>{title}</h4>
+      <div className="cast-list">
+        {entries.map((entry) => (
+          <CastEntryCard
+            key={entry.id}
+            campaign={campaign}
+            entry={entry}
+            draft={drafts[getCastDraftKey(campaign.id, entry.id)] || entry}
+            onDraftChange={onDraftChange}
+            onPortraitFile={onPortraitFile}
+            onSave={onSave}
+            onDelete={onDelete}
+          />
+        ))}
+        {!entries.length && <p>No {title.toLowerCase()} yet.</p>}
+      </div>
+    </section>
+  );
+}
+
+function CastEntryCard({ campaign, entry, draft, onDraftChange, onPortraitFile, onSave, onDelete }) {
+  const label = entry.castType === 'player' ? 'Player' : entry.castType === 'npc' ? 'NPC' : 'Monster';
+  return (
+    <article className={`cast-card ${entry.visibleToPlayers ? '' : 'hidden-cast'}`}>
+      <div className="cast-card-header">
+        <div className="cast-portrait">
+          {draft.portraitUrl ? <img src={draft.portraitUrl} alt="" /> : <span>{String(draft.name || '?').slice(0, 2).toUpperCase()}</span>}
+        </div>
+        <div>
+          <strong>{entry.name}</strong>
+          <small>
+            {label}
+            {entry.castType !== 'player' && !entry.visibleToPlayers ? ' · hidden from players' : ''}
+          </small>
+        </div>
+      </div>
+
+      {entry.canEdit ? (
+        <div className="cast-edit-form">
+          <input
+            value={draft.name || ''}
+            onChange={(event) => onDraftChange(campaign.id, entry.id, { name: event.target.value })}
+            placeholder="Name"
+          />
+          <CastPortraitControls
+            campaignId={campaign.id}
+            entryId={entry.id}
+            portraitUrl={draft.portraitUrl || ''}
+            onDraftChange={onDraftChange}
+            onPortraitFile={onPortraitFile}
+          />
+          {entry.canManageVisibility && (
+            <label className="check-control">
+              <input
+                type="checkbox"
+                checked={draft.visibleToPlayers !== false}
+                onChange={(event) => onDraftChange(campaign.id, entry.id, { visibleToPlayers: event.target.checked })}
+              />
+              Show to players
+            </label>
+          )}
+          <textarea
+            value={draft.publicDescription || ''}
+            onChange={(event) => onDraftChange(campaign.id, entry.id, { publicDescription: event.target.value })}
+            placeholder="Description shown to players"
+            rows={3}
+          />
+          <textarea
+            value={draft.gmNotes || ''}
+            onChange={(event) => onDraftChange(campaign.id, entry.id, { gmNotes: event.target.value })}
+            placeholder="GM notes"
+            rows={3}
+          />
+          <div className="button-row">
+            <button type="button" onClick={() => onSave(entry)}>Save</button>
+            {entry.canDelete && <button type="button" onClick={() => onDelete(entry)}>Delete</button>}
+          </div>
+        </div>
+      ) : (
+        <div className="cast-readonly">
+          <p>{entry.publicDescription || 'No public description yet.'}</p>
+          {entry.gmNotes && <small>GM notes: {entry.gmNotes}</small>}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function CastPortraitControls({ campaignId, entryId, portraitUrl, onDraftChange, onPortraitFile }) {
+  return (
+    <div className="cast-portrait-controls">
+      <input
+        value={portraitUrl}
+        onChange={(event) => onDraftChange(campaignId, entryId, { portraitUrl: event.target.value })}
+        placeholder="Portrait image URL"
+      />
+      <label className="file-control compact-file">
+        <span>Upload</span>
+        <input type="file" accept="image/*" onChange={(event) => onPortraitFile(campaignId, entryId, event.target.files?.[0])} />
+      </label>
+      <small>Square image, 512x512 or smaller.</small>
+    </div>
+  );
+}
+
 function ForumPage({
   campaign,
   threads,
   selectedThread,
+  postIdentities,
   threadDraft,
   replyDraft,
   message,
@@ -2101,7 +2557,13 @@ function ForumPage({
   onCreateThread,
   onAssignThread,
   onReplyDraftChange,
-  onCreatePost
+  onCreatePost,
+  editingPost,
+  onStartEditPost,
+  onEditDraftChange,
+  onCancelEditPost,
+  onSaveEditPost,
+  onDeletePost
 }) {
   return (
     <main className="forum-page">
@@ -2166,23 +2628,28 @@ function ForumPage({
               </header>
               <div className="forum-post-list">
                 {selectedThread.posts.map((post) => (
-                  <article className="forum-post" key={post.id}>
-                    <aside className="post-author">
-                      <div className="avatar">{(post.authorDisplayName || post.authorUserId || '?').slice(0, 1).toUpperCase()}</div>
-                      <strong>{post.authorDisplayName || post.authorUserId}</strong>
-                      <span>{post.authorUserId}</span>
-                    </aside>
-                    <div className="post-body">
-                      <header>
-                        <time>{formatDateTime(post.createdAt)}</time>
-                      </header>
-                      <div className="bbcode-body" dangerouslySetInnerHTML={{ __html: renderBbcode(post.body) }} />
-                    </div>
-                  </article>
+                  <ForumPostArticle
+                    key={post.id}
+                    post={post}
+                    threadId={selectedThread.id}
+                    viewerUserId={authUser?.id}
+                    canDelete={campaign.role === 'owner' || post.authorUserId === authUser?.id}
+                    editingPost={editingPost}
+                    onStartEditPost={onStartEditPost}
+                    onEditDraftChange={onEditDraftChange}
+                    onCancelEditPost={onCancelEditPost}
+                    onSaveEditPost={onSaveEditPost}
+                    onDeletePost={onDeletePost}
+                  />
                 ))}
               </div>
               <form className="forum-reply-form" onSubmit={onCreatePost}>
-                <BBCodeEditor value={replyDraft} onChange={onReplyDraftChange} placeholder="Reply with BBCode" />
+                <BBCodeEditor
+                  value={replyDraft}
+                  onChange={onReplyDraftChange}
+                  postIdentities={postIdentities}
+                  placeholder="Reply with BBCode"
+                />
                 <button type="submit">Post reply</button>
               </form>
             </>
@@ -2222,6 +2689,7 @@ function ForumPage({
             <BBCodeEditor
               value={threadDraft.body || ''}
               onChange={(value) => onThreadDraftChange((current) => ({ ...current, body: value }))}
+              postIdentities={postIdentities}
               placeholder="First post"
             />
             <button type="submit" disabled={!campaign}>Create thread</button>
@@ -2272,17 +2740,140 @@ function SiteFooter({ compact = false }) {
   );
 }
 
+function ForumPostArticle({
+  post,
+  threadId,
+  viewerUserId,
+  compact = false,
+  canDelete = false,
+  editingPost,
+  onStartEditPost,
+  onEditDraftChange,
+  onCancelEditPost,
+  onSaveEditPost,
+  onDeletePost
+}) {
+  const isAuthor = post.authorUserId === viewerUserId;
+  const isEditing = editingPost?.postId === post.id;
+  const canEdit = isAuthor && !post.deleted;
+
+  return (
+    <article className={`forum-post ${compact ? 'compact' : ''} ${post.deleted ? 'deleted' : ''}`}>
+      {!compact && (
+        <aside className="post-author">
+          <div className="avatar">{(post.authorDisplayName || post.authorUserId || '?').slice(0, 1).toUpperCase()}</div>
+          <strong>{post.authorDisplayName || post.authorUserId}</strong>
+          <span>{post.authorUserId}</span>
+        </aside>
+      )}
+      <div className="post-body">
+        <header>
+          <div>
+            {compact && <strong>{post.authorDisplayName || post.authorUserId}</strong>}
+            <time>{formatDateTime(post.createdAt)}</time>
+            {post.editedAt && !post.deleted && <small>Edited {formatDateTime(post.editedAt)}</small>}
+            {post.deleted && <small>Post text deleted {formatDateTime(post.deletedAt)}</small>}
+          </div>
+          <div className="post-actions">
+            {canEdit && !isEditing && <button type="button" onClick={() => onStartEditPost(post)}>Edit</button>}
+            {canDelete && !post.deleted && (
+              <button type="button" onClick={() => onDeletePost(threadId, post.id)}>Delete</button>
+            )}
+          </div>
+        </header>
+
+        {isEditing ? (
+          <form className="post-edit-form" onSubmit={(event) => onSaveEditPost(event, threadId)}>
+            <BBCodeEditor
+              value={editingPost.body}
+              onChange={onEditDraftChange}
+              placeholder="Edit post text. Existing dice rolls will not change."
+            />
+            <div className="button-row">
+              <button type="submit">Save edit</button>
+              <button type="button" onClick={onCancelEditPost}>Cancel</button>
+            </div>
+            <small>Dice rolls are immutable. New roll commands typed during edits will not be rolled.</small>
+          </form>
+        ) : post.deleted ? (
+          <p className="deleted-post-note">This post text was deleted. Dice rolls are preserved below.</p>
+        ) : (
+          <div className="bbcode-body" dangerouslySetInnerHTML={{ __html: renderBbcode(post.body) }} />
+        )}
+
+        <DiceRollList rolls={post.rolls || []} />
+      </div>
+    </article>
+  );
+}
+
+function DiceRollList({ rolls }) {
+  if (!rolls.length) return null;
+  return (
+    <div className="dice-roll-list" aria-label="Dice rolls">
+      {rolls.map((roll) => (
+        <article className="dice-roll-card" key={roll.id}>
+          <header>
+            <strong>{roll.commandText}</strong>
+            <span>{formatDateTime(roll.createdAt)}</span>
+          </header>
+          {roll.rollType === 'shadowrun' ? (
+            <ShadowrunRollResult result={roll.result} />
+          ) : (
+            <StandardRollResult result={roll.result} />
+          )}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function StandardRollResult({ result }) {
+  const modifierText = result.modifier
+    ? ` ${result.modifier > 0 ? '+' : '-'} ${Math.abs(result.modifier)}`
+    : '';
+  return (
+    <div className="dice-roll-result">
+      <span>{result.diceCount}d{result.dieSize}{modifierText}</span>
+      <strong>Total: {result.total}</strong>
+      <small>Dice: {result.dice.join(', ')}{result.modifier ? ` · subtotal ${result.subtotal}` : ''}</small>
+    </div>
+  );
+}
+
+function ShadowrunRollResult({ result }) {
+  return (
+    <div className="dice-roll-result">
+      <span>{result.diceCount}d6{result.useEdge ? ' with Edge' : ''}</span>
+      <strong>{result.hits} hits</strong>
+      <small>
+        5s: {result.fives} · 6s: {result.sixes} · 1s: {result.ones}
+        {result.glitch ? ` · ${result.criticalGlitch ? 'Critical glitch' : 'Glitch'}` : ''}
+      </small>
+      <small>Dice: {result.dice.join(', ')}{result.edgeDice?.length ? ` · Edge explosions: ${result.edgeDice.join(', ')}` : ''}</small>
+    </div>
+  );
+}
+
 function MapForumPanel({
   activeMap,
   threads,
   selectedThread,
+  postIdentities,
   threadDraft,
   replyDraft,
   onThreadDraftChange,
   onReplyDraftChange,
   onCreateThread,
   onSelectThread,
-  onCreatePost
+  onCreatePost,
+  viewerUserId,
+  editingPost,
+  onStartEditPost,
+  onEditDraftChange,
+  onCancelEditPost,
+  onSaveEditPost,
+  onDeletePost
 }) {
   if (!activeMap?.campaignId) {
     return <div className="empty-state">Forums are available for campaign maps.</div>;
@@ -2318,6 +2909,7 @@ function MapForumPanel({
           <BBCodeEditor
             value={threadDraft.body}
             onChange={(value) => onThreadDraftChange((current) => ({ ...current, body: value }))}
+            postIdentities={postIdentities}
             placeholder="First post with BBCode"
           />
           <button type="submit">Create map thread</button>
@@ -2335,22 +2927,27 @@ function MapForumPanel({
             </header>
             <div className="forum-post-list">
               {selectedThread.posts.map((post) => (
-                <article className="forum-post" key={post.id}>
-                  <header>
-                    <strong>{post.authorDisplayName || post.authorUserId}</strong>
-                    <time>{formatDateTime(post.createdAt)}</time>
-                  </header>
-                  <div
-                    className="bbcode-body"
-                    dangerouslySetInnerHTML={{ __html: renderBbcode(post.body) }}
-                  />
-                </article>
+                <ForumPostArticle
+                  key={post.id}
+                  post={post}
+                  threadId={selectedThread.id}
+                  viewerUserId={viewerUserId}
+                  compact
+                  canDelete={post.authorUserId === viewerUserId}
+                  editingPost={editingPost}
+                  onStartEditPost={onStartEditPost}
+                  onEditDraftChange={onEditDraftChange}
+                  onCancelEditPost={onCancelEditPost}
+                  onSaveEditPost={onSaveEditPost}
+                  onDeletePost={onDeletePost}
+                />
               ))}
             </div>
             <form className="forum-reply-form" onSubmit={onCreatePost}>
               <BBCodeEditor
                 value={replyDraft}
                 onChange={onReplyDraftChange}
+                postIdentities={postIdentities}
                 placeholder="Reply with BBCode"
               />
               <button type="submit">Post reply</button>
@@ -2364,7 +2961,7 @@ function MapForumPanel({
   );
 }
 
-function BBCodeEditor({ value, onChange, placeholder }) {
+function BBCodeEditor({ value, onChange, placeholder, postIdentities = [] }) {
   const textareaRef = useRef(null);
 
   function wrapSelection(openTag, closeTag = null, fallback = '') {
@@ -2425,6 +3022,53 @@ function BBCodeEditor({ value, onChange, placeholder }) {
     wrapSelection(openTag, '[/list]', '[*]First item\n[*]Second item');
   }
 
+  function insertInlineCommand(command) {
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? value.length;
+    const prefix = value && !value.endsWith('\n') ? '\n' : '';
+    const nextText = `${value.slice(0, start)}${prefix}${command}${value.slice(start)}`;
+    onChange(nextText);
+    window.requestAnimationFrame(() => {
+      if (!textarea) return;
+      const cursor = start + prefix.length + command.length;
+      textarea.focus();
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  }
+
+  function insertCharacterBlock(identity) {
+    const attrs = [
+      ['id', identity.id],
+      ['type', identity.type],
+      ['name', identity.name],
+      ['subtitle', identity.subtitle],
+      ['image', identity.image || '']
+    ]
+      .map(([name, attrValue]) => `${name}=${encodeBbcodeAttribute(attrValue)}`)
+      .join(' ');
+    const fallback = `${identity.name} speaks or acts here.`;
+    wrapSelection(`[character ${attrs}]`, '[/character]', fallback);
+  }
+
+  function insertPostAsBlock() {
+    if (!postIdentities.length) {
+      window.alert('No character, NPC, or monster posting options are available for this campaign yet.');
+      return;
+    }
+    const choices = postIdentities
+      .map((identity, index) => `${index + 1}. ${identity.name} - ${identity.subtitle}`)
+      .join('\n');
+    const selection = window.prompt(`Post as which character/NPC?\n\n${choices}`, '1');
+    if (!selection) return;
+    const selectedIndex = Number.parseInt(selection, 10) - 1;
+    const identity = postIdentities[selectedIndex];
+    if (!identity) {
+      window.alert('That character/NPC choice was not found.');
+      return;
+    }
+    insertCharacterBlock(identity);
+  }
+
   function insertQuoteWithAuthor() {
     const author = window.prompt('Quoted author');
     if (!author) {
@@ -2451,6 +3095,39 @@ function BBCodeEditor({ value, onChange, placeholder }) {
         <button type="button" onClick={insertUrl}>Link</button>
         <button type="button" onClick={insertEmail}>Email</button>
         <button type="button" onClick={insertImage}>Image</button>
+        <button type="button" className="post-as-tool" onClick={insertPostAsBlock}>Post as</button>
+        <button type="button" className="dice-tool" onClick={() => insertInlineCommand('/roll 1d20+0')}>/roll d20</button>
+        <button type="button" className="dice-tool" onClick={() => insertInlineCommand('/sr 12')}>/sr dice pool</button>
+        <button type="button" className="dice-tool" onClick={() => insertInlineCommand('/sr 12 edge')}>/sr edge</button>
+      </div>
+      {!!postIdentities.length && (
+        <div className="character-bbcode-tools" aria-label="Character BBCode blocks">
+          <strong>Character/NPC block</strong>
+          <div className="post-as-buttons">
+            {postIdentities.map((identity) => (
+              <button
+                type="button"
+                key={identity.id}
+                onClick={() => insertCharacterBlock(identity)}
+              >
+                <span className={`post-as-thumb ${identity.type === 'npc' ? 'npc' : ''}`}>
+                  {identity.image ? <img src={identity.image} alt="" /> : identity.name.slice(0, 2).toUpperCase()}
+                </span>
+                <span>
+                  <strong>{identity.name}</strong>
+                  <small>{identity.subtitle}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="dice-syntax-help">
+        <strong>Dice syntax</strong>
+        <span><code>/roll 2d6+3</code> rolls standard dice.</span>
+        <span><code>/sr 12</code> rolls 12 Shadowrun d6s and counts 5s, 6s, and 1s.</span>
+        <span><code>/sr 12 edge</code> uses Edge with exploding 6s.</span>
+        {!!postIdentities.length && <span>Use a character/NPC button to insert an in-character BBCode block inside the post.</span>}
       </div>
       <textarea
         ref={textareaRef}
@@ -2501,10 +3178,59 @@ function renderBbcode(input) {
     .replace(/\[url\](https?:\/\/[^\s[]+?)\[\/url\]/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/\[url=(https?:\/\/[^\s\]]+?)\]([\s\S]*?)\[\/url\]/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$2</a>')
     .replace(/\[img\](https?:\/\/[^\s[]+?)\[\/img\]/gi, '<img src="$1" alt="" loading="lazy" />');
+  html = renderCharacterBbcode(html);
   html = renderBbcodeLists(html);
   html = html
     .replace(/\r?\n/g, '<br />');
   return html;
+}
+
+function renderCharacterBbcode(html) {
+  return html.replace(/\[character\s+([^\]]+)\]([\s\S]*?)\[\/character\]/gi, (_match, attrText, content) => {
+    const attrs = parseBbcodeAttributes(attrText);
+    const name = attrs.name || 'Character';
+    const subtitle = attrs.subtitle || (attrs.type === 'npc' ? 'NPC/Monster' : 'Character');
+    const typeClass = attrs.type === 'npc' ? ' npc' : '';
+    const safeImage = sanitizeImageSource(attrs.image || '');
+    const portrait = safeImage
+      ? `<img src="${escapeHtml(safeImage)}" alt="" loading="lazy" />`
+      : `<span>${escapeHtml(name.slice(0, 2).toUpperCase())}</span>`;
+    return `<section class="character-post${typeClass}">
+      <aside class="character-portrait">${portrait}</aside>
+      <div class="character-post-content">
+        <header><strong>${escapeHtml(name)}</strong><small>${escapeHtml(subtitle)}</small></header>
+        <div class="bbcode-body">${content}</div>
+      </div>
+    </section>`;
+  });
+}
+
+function parseBbcodeAttributes(attrText) {
+  const attrs = {};
+  for (const match of String(attrText || '').matchAll(/([a-z]+)=([^\s\]]*)/gi)) {
+    attrs[match[1].toLowerCase()] = decodeBbcodeAttribute(match[2]);
+  }
+  return attrs;
+}
+
+function encodeBbcodeAttribute(value) {
+  return encodeURIComponent(String(value || ''));
+}
+
+function decodeBbcodeAttribute(value) {
+  try {
+    return decodeURIComponent(String(value || ''));
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeImageSource(source) {
+  const value = String(source || '').trim();
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(value)) return value;
+  if (value.startsWith('/')) return value;
+  return '';
 }
 
 function renderBbcodeLists(html) {

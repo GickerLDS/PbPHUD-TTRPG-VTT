@@ -94,6 +94,31 @@ CREATE TABLE IF NOT EXISTS campaign_members (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS campaign_cast (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  campaign_id BIGINT UNSIGNED NOT NULL,
+  cast_type VARCHAR(20) NOT NULL,
+  owner_user_id VARCHAR(191) NULL,
+  name VARCHAR(160) NOT NULL,
+  portrait_url LONGTEXT NULL,
+  public_description LONGTEXT NOT NULL,
+  gm_notes LONGTEXT NOT NULL,
+  visible_to_players BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_campaign_cast_campaign (campaign_id, cast_type),
+  KEY idx_campaign_cast_owner (owner_user_id),
+  CONSTRAINT fk_campaign_cast_campaign
+    FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS portrait_url LONGTEXT NULL AFTER name;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS public_description LONGTEXT NOT NULL AFTER portrait_url;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS gm_notes LONGTEXT NOT NULL AFTER public_description;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS visible_to_players BOOLEAN NOT NULL DEFAULT TRUE AFTER gm_notes;
+
 CREATE TABLE IF NOT EXISTS map_campaign_invites (
   map_id BIGINT UNSIGNED NOT NULL,
   user_id VARCHAR(191) NOT NULL,
@@ -128,13 +153,35 @@ CREATE TABLE IF NOT EXISTS campaign_forum_posts (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   thread_id BIGINT UNSIGNED NOT NULL,
   author_user_id VARCHAR(191) NOT NULL,
+  post_as_json LONGTEXT NULL,
   body_bbcode LONGTEXT NOT NULL,
+  deleted_at TIMESTAMP NULL,
+  edited_at TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_campaign_forum_posts_thread (thread_id, created_at),
   CONSTRAINT fk_campaign_forum_posts_thread
     FOREIGN KEY (thread_id) REFERENCES campaign_forum_threads (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE campaign_forum_posts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL AFTER body_bbcode;
+ALTER TABLE campaign_forum_posts ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP NULL AFTER deleted_at;
+ALTER TABLE campaign_forum_posts ADD COLUMN IF NOT EXISTS post_as_json LONGTEXT NULL AFTER author_user_id;
+
+CREATE TABLE IF NOT EXISTS campaign_forum_post_rolls (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  post_id BIGINT UNSIGNED NOT NULL,
+  roll_index SMALLINT UNSIGNED NOT NULL,
+  roll_type VARCHAR(32) NOT NULL,
+  command_text VARCHAR(120) NOT NULL,
+  result_json LONGTEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_campaign_forum_post_roll_order (post_id, roll_index),
+  CONSTRAINT fk_campaign_forum_post_rolls_post
+    FOREIGN KEY (post_id) REFERENCES campaign_forum_posts (id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
