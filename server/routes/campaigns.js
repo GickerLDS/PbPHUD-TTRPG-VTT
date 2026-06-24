@@ -46,10 +46,17 @@ const campaignMapSchema = z.object({
   gridHeight: z.number().int().min(5).max(99).default(40)
 });
 
+const mapVisibilityLevelSchema = z.enum(['public', 'campaign', 'hidden', 'demo']);
+
 const forumThreadSchema = z.object({
   title: z.string().trim().min(1).max(180),
   body: z.string().trim().min(1).max(20000),
-  mapId: z.number().int().positive().nullable().optional()
+  mapId: z.number().int().positive().nullable().optional(),
+  visibilityLevel: z.enum(['demo', 'public', 'campaign', 'hidden']).optional().default('campaign')
+});
+
+const forumThreadVisibilitySchema = z.object({
+  visibilityLevel: z.enum(['demo', 'public', 'campaign', 'hidden'])
 });
 
 const forumPostSchema = z.object({
@@ -99,6 +106,10 @@ campaignsRouter.get('/:campaignId/cast/:castId/portrait', async (req, res, next)
 });
 
 campaignsRouter.use((req, res, next) => {
+  if (req.method === 'GET' && /^\/[^/]+\/forum\/threads(?:\/[^/]+)?$/.test(req.path)) {
+    next();
+    return;
+  }
   if (!req.user) {
     res.status(401).json({ error: 'Sign in required' });
     return;
@@ -134,7 +145,7 @@ campaignsRouter.get('/', async (req, res, next) => {
       ownerUserId: row.ownerUserId,
       role: row.ownerUserId === viewerUserId ? 'owner' : 'member',
       mapCount: Number(row.mapCount),
-      unreadForumCount: await loadCampaignUnreadForumCount(row.id, viewerUserId),
+      unreadForumCount: await loadCampaignUnreadForumCount(row.id, viewerUserId, row.ownerUserId === viewerUserId),
       members: row.ownerUserId === viewerUserId ? await loadCampaignMembers(row.id) : [],
       maps: await loadCampaignMaps(row.id, viewerUserId, row.ownerUserId === viewerUserId)
     })));
@@ -195,7 +206,8 @@ campaignsRouter.post('/:campaignId/members', async (req, res, next) => {
 
 campaignsRouter.get('/:campaignId/cast', async (req, res, next) => {
   try {
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
@@ -343,9 +355,9 @@ campaignsRouter.post('/:campaignId/maps', async (req, res, next) => {
     const result = await query(
       `INSERT INTO maps (
          campaign_id, group_name, map_name, grid_size, grid_width, grid_height,
-         owner_user_id, player_visible, legacy_map_data, legacy_map_data2
+         owner_user_id, player_visible, visibility_level, legacy_map_data, legacy_map_data2
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, '', '')`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, FALSE, 'hidden', '', '')`,
       [
         campaign.id,
         groupName,
@@ -362,7 +374,8 @@ campaignsRouter.post('/:campaignId/maps', async (req, res, next) => {
         id: Number(result.insertId),
         campaignId: Number(campaign.id),
         name: body.mapName,
-        playerVisible: false
+        playerVisible: false,
+        visibilityLevel: 'hidden'
       }
     });
   } catch (error) {
@@ -389,6 +402,7 @@ campaignsRouter.get('/:campaignId/forum/threads', async (req, res, next) => {
       `SELECT
          thread.id,
          thread.title,
+         thread.visibility_level AS visibilityLevel,
          thread.map_id AS mapId,
          thread.created_by_user_id AS createdByUserId,
          creator.display_name AS createdByDisplayName,
@@ -424,9 +438,15 @@ campaignsRouter.get('/:campaignId/forum/threads', async (req, res, next) => {
         AND thread_read.user_id = ?
        WHERE thread.campaign_id = ?
          AND (? IS NULL OR thread.map_id = ?)
+         AND (
+           ? = TRUE
+           OR thread.visibility_level IN ('demo', 'public')
+           OR (? = TRUE AND thread.visibility_level = 'campaign')
+         )
        GROUP BY
          thread.id,
          thread.title,
+         thread.visibility_level,
          thread.map_id,
          thread.created_by_user_id,
          creator.display_name,
@@ -439,10 +459,10 @@ campaignsRouter.get('/:campaignId/forum/threads', async (req, res, next) => {
          thread.updated_at,
          maps.map_name
        ORDER BY COALESCE(MAX(post.created_at), thread.updated_at) DESC, thread.created_at DESC`,
-      [userPublicId(req.user), userPublicId(req.user), campaign.id, mapId, mapId]
+      [access.viewerUserId, access.viewerUserId, campaign.id, mapId, mapId, access.isOwner, access.isMember]
     );
 
-    res.json({ threads: rows.map(formatThreadSummary) });
+    res.json({ threads: rows.map((row) => formatThreadSummary(row, threadPermissions(row.visibilityLevel, access))) });
   } catch (error) {
     next(error);
   }
@@ -466,6 +486,10 @@ campaignsRouter.get('/:campaignId/forum/post-identities', async (req, res, next)
 
 campaignsRouter.post('/:campaignId/forum/threads', async (req, res, next) => {
   try {
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
     const body = validate(forumThreadSchema, req.body);
     const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
     if (!campaign) {
@@ -485,16 +509,22 @@ campaignsRouter.post('/:campaignId/forum/threads', async (req, res, next) => {
     const normalizedBody = await normalizeForumBodyCharacters(campaign.id, viewerUserId, campaign.owner_user_id === viewerUserId, body.body);
     const result = await transaction(async (connection) => {
       const threadResult = await connection.query(
-        `INSERT INTO campaign_forum_threads (campaign_id, map_id, title, created_by_user_id)
-         VALUES (?, ?, ?, ?)`,
-        [campaign.id, body.mapId || null, body.title, viewerUserId]
+        `INSERT INTO campaign_forum_threads (campaign_id, map_id, title, visibility_level, created_by_user_id)
+         VALUES (?, ?, ?, ?, ?)`,
+        [campaign.id, body.mapId || null, body.title, body.visibilityLevel, viewerUserId]
       );
       await insertForumPost(connection, threadResult.insertId, viewerUserId, normalizedBody);
       return threadResult;
     });
 
     await subscribeAutoSubscribersToForumThread(campaign.id, Number(result.insertId));
-    const thread = await loadForumThread(result.insertId, campaign.id, viewerUserId);
+    const access = {
+      campaign,
+      viewerUserId,
+      isOwner: campaign.owner_user_id === viewerUserId,
+      isMember: true
+    };
+    const thread = await loadForumThread(result.insertId, campaign.id, viewerUserId, access);
     res.status(201).json({ thread });
   } catch (error) {
     next(error);
@@ -503,14 +533,15 @@ campaignsRouter.post('/:campaignId/forum/threads', async (req, res, next) => {
 
 campaignsRouter.get('/:campaignId/forum/threads/:threadId', async (req, res, next) => {
   try {
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
     }
 
-    const thread = await loadForumThread(req.params.threadId, campaign.id, userPublicId(req.user));
-    if (!thread) {
+    const thread = await loadForumThread(req.params.threadId, campaign.id, access.viewerUserId, access);
+    if (!thread || !thread.permissions.canView) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
@@ -523,20 +554,25 @@ campaignsRouter.get('/:campaignId/forum/threads/:threadId', async (req, res, nex
 
 campaignsRouter.post('/:campaignId/forum/threads/:threadId/read', async (req, res, next) => {
   try {
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
     }
 
-    const thread = await loadForumThread(req.params.threadId, campaign.id, userPublicId(req.user));
-    if (!thread) {
+    const thread = await loadForumThread(req.params.threadId, campaign.id, access.viewerUserId, access);
+    if (!thread || !thread.permissions.canView) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
+    if (!access.viewerUserId) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
 
-    await markThreadRead(thread.id, userPublicId(req.user));
-    res.json({ thread: await loadForumThread(thread.id, campaign.id, userPublicId(req.user)) });
+    await markThreadRead(thread.id, access.viewerUserId);
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, access.viewerUserId, access) });
   } catch (error) {
     next(error);
   }
@@ -544,15 +580,20 @@ campaignsRouter.post('/:campaignId/forum/threads/:threadId/read', async (req, re
 
 campaignsRouter.post('/:campaignId/forum/threads/:threadId/subscription', async (req, res, next) => {
   try {
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
     }
 
-    const viewerUserId = userPublicId(req.user);
-    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId);
-    if (!thread) {
+    const viewerUserId = access.viewerUserId;
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access);
+    if (!thread || !thread.permissions.canView) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
@@ -564,7 +605,7 @@ campaignsRouter.post('/:campaignId/forum/threads/:threadId/subscription', async 
       [thread.id, viewerUserId]
     );
 
-    res.json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId) });
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId, access) });
   } catch (error) {
     next(error);
   }
@@ -572,15 +613,20 @@ campaignsRouter.post('/:campaignId/forum/threads/:threadId/subscription', async 
 
 campaignsRouter.delete('/:campaignId/forum/threads/:threadId/subscription', async (req, res, next) => {
   try {
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
     }
 
-    const viewerUserId = userPublicId(req.user);
-    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId);
-    if (!thread) {
+    const viewerUserId = access.viewerUserId;
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access);
+    if (!thread || !thread.permissions.canView) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
@@ -590,7 +636,7 @@ campaignsRouter.delete('/:campaignId/forum/threads/:threadId/subscription', asyn
       [thread.id, viewerUserId]
     );
 
-    res.json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId) });
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId, access) });
   } catch (error) {
     next(error);
   }
@@ -598,15 +644,20 @@ campaignsRouter.delete('/:campaignId/forum/threads/:threadId/subscription', asyn
 
 campaignsRouter.post('/:campaignId/forum/threads/:threadId/test-notification', async (req, res, next) => {
   try {
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
     }
 
-    const viewerUserId = userPublicId(req.user);
-    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId);
-    if (!thread) {
+    const viewerUserId = access.viewerUserId;
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access);
+    if (!thread || !thread.permissions.canView) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
@@ -628,16 +679,25 @@ campaignsRouter.post('/:campaignId/forum/threads/:threadId/test-notification', a
 campaignsRouter.post('/:campaignId/forum/threads/:threadId/posts', async (req, res, next) => {
   try {
     const body = validate(forumPostSchema, req.body);
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
     }
 
-    const viewerUserId = userPublicId(req.user);
-    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId);
-    if (!thread) {
+    const viewerUserId = access.viewerUserId;
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access);
+    if (!thread || !thread.permissions.canView) {
       res.status(404).json({ error: 'Forum thread not found' });
+      return;
+    }
+    if (!thread.permissions.canPost) {
+      res.status(403).json({ error: 'You do not have permission to post in this thread' });
       return;
     }
 
@@ -649,7 +709,7 @@ campaignsRouter.post('/:campaignId/forum/threads/:threadId/posts', async (req, r
       console.warn('Forum subscription queueing failed', error);
     });
 
-    res.status(201).json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId) });
+    res.status(201).json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId, access) });
   } catch (error) {
     next(error);
   }
@@ -658,9 +718,21 @@ campaignsRouter.post('/:campaignId/forum/threads/:threadId/posts', async (req, r
 campaignsRouter.patch('/:campaignId/forum/threads/:threadId/posts/:postId', async (req, res, next) => {
   try {
     const body = validate(forumPostEditSchema, req.body);
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    const viewerUserId = access.viewerUserId;
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access);
+    if (!thread || !thread.permissions.canView) {
+      res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
 
@@ -669,7 +741,7 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/posts/:postId', asyn
       res.status(404).json({ error: 'Forum post not found' });
       return;
     }
-    if (post.author_user_id !== userPublicId(req.user)) {
+    if (post.author_user_id !== viewerUserId || !thread.permissions.canEditOwnPosts) {
       res.status(403).json({ error: 'Only the poster can edit this post' });
       return;
     }
@@ -680,8 +752,8 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/posts/:postId', asyn
 
     const normalizedBody = await normalizeForumBodyCharacters(
       campaign.id,
-      userPublicId(req.user),
-      campaign.owner_user_id === userPublicId(req.user),
+      viewerUserId,
+      campaign.owner_user_id === viewerUserId,
       body.body
     );
 
@@ -692,7 +764,7 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/posts/:postId', asyn
       [normalizedBody, post.id]
     );
 
-    res.json({ thread: await loadForumThread(req.params.threadId, campaign.id, userPublicId(req.user)) });
+    res.json({ thread: await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access) });
   } catch (error) {
     next(error);
   }
@@ -700,9 +772,20 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/posts/:postId', asyn
 
 campaignsRouter.delete('/:campaignId/forum/threads/:threadId/posts/:postId', async (req, res, next) => {
   try {
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    const thread = await loadForumThread(req.params.threadId, campaign.id, access.viewerUserId, access);
+    if (!thread || !thread.permissions.canView) {
+      res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
 
@@ -712,7 +795,7 @@ campaignsRouter.delete('/:campaignId/forum/threads/:threadId/posts/:postId', asy
       return;
     }
 
-    const viewerUserId = userPublicId(req.user);
+    const viewerUserId = access.viewerUserId;
     if (post.author_user_id !== viewerUserId && campaign.owner_user_id !== viewerUserId) {
       res.status(403).json({ error: 'Only the poster or campaign owner can delete this post' });
       return;
@@ -725,7 +808,7 @@ campaignsRouter.delete('/:campaignId/forum/threads/:threadId/posts/:postId', asy
       [post.id]
     );
 
-    res.json({ thread: await loadForumThread(req.params.threadId, campaign.id, viewerUserId) });
+    res.json({ thread: await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access) });
   } catch (error) {
     next(error);
   }
@@ -740,7 +823,14 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/map', async (req, re
       return;
     }
 
-    const thread = await loadForumThread(req.params.threadId, campaign.id, userPublicId(req.user));
+    const viewerUserId = userPublicId(req.user);
+    const access = {
+      campaign,
+      viewerUserId,
+      isOwner: true,
+      isMember: true
+    };
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access);
     if (!thread) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
@@ -759,7 +849,40 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/map', async (req, re
       [body.mapId, thread.id, campaign.id]
     );
 
-    res.json({ thread: await loadForumThread(thread.id, campaign.id, userPublicId(req.user)) });
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId, access) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.patch('/:campaignId/forum/threads/:threadId/visibility', async (req, res, next) => {
+  try {
+    const body = validate(forumThreadVisibilitySchema, req.body);
+    const campaign = await loadOwnedCampaign(req.params.campaignId, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    const viewerUserId = userPublicId(req.user);
+    const access = {
+      campaign,
+      viewerUserId,
+      isOwner: true,
+      isMember: true
+    };
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId, access);
+    if (!thread) {
+      res.status(404).json({ error: 'Forum thread not found' });
+      return;
+    }
+
+    await query(
+      `UPDATE campaign_forum_threads SET visibility_level = ? WHERE id = ? AND campaign_id = ?`,
+      [body.visibilityLevel, thread.id, campaign.id]
+    );
+
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId, access) });
   } catch (error) {
     next(error);
   }
@@ -789,6 +912,34 @@ async function loadAccessibleCampaign(campaignId, user) {
   return rows[0] ?? null;
 }
 
+async function loadCampaignForumAccess(campaignId, user) {
+  const viewerUserId = userPublicId(user);
+  return loadCampaignForumAccessByViewerUserId(campaignId, viewerUserId);
+}
+
+async function loadCampaignForumAccessByViewerUserId(campaignId, viewerUserId = '') {
+  const rows = await query(
+    `SELECT
+       campaigns.*,
+       campaigns.owner_user_id AS ownerUserId,
+       member.user_id AS memberUserId
+     FROM campaigns
+     LEFT JOIN campaign_members member
+       ON member.campaign_id = campaigns.id
+      AND member.user_id = ?
+     WHERE campaigns.id = ?
+     LIMIT 1`,
+    [viewerUserId, campaignId]
+  );
+  const campaign = rows[0];
+  if (!campaign) return null;
+  const ownerUserId = campaign.owner_user_id ?? campaign.ownerUserId ?? '';
+  const memberUserId = campaign.member_user_id ?? campaign.memberUserId ?? '';
+  const isOwner = Boolean(viewerUserId && ownerUserId === viewerUserId);
+  const isMember = Boolean(isOwner || memberUserId === viewerUserId);
+  return { campaign, viewerUserId, isOwner, isMember };
+}
+
 async function loadCampaignMembers(campaignId) {
   const rows = await query(
     `SELECT user_id AS userId FROM campaign_members WHERE campaign_id = ? ORDER BY user_id`,
@@ -797,7 +948,7 @@ async function loadCampaignMembers(campaignId) {
   return rows.map((row) => row.userId);
 }
 
-async function loadCampaignUnreadForumCount(campaignId, viewerUserId) {
+async function loadCampaignUnreadForumCount(campaignId, viewerUserId, isOwner = false) {
   const rows = await query(
     `SELECT COUNT(post.id) AS unreadCount
      FROM campaign_forum_threads thread
@@ -806,9 +957,10 @@ async function loadCampaignUnreadForumCount(campaignId, viewerUserId) {
        ON thread_read.thread_id = thread.id
       AND thread_read.user_id = ?
      WHERE thread.campaign_id = ?
+       AND (? = TRUE OR thread.visibility_level <> 'hidden')
        AND post.author_user_id <> ?
        AND (thread_read.last_read_post_id IS NULL OR post.id > thread_read.last_read_post_id)`,
-    [viewerUserId, campaignId, viewerUserId]
+    [viewerUserId, campaignId, isOwner, viewerUserId]
   );
   return Number(rows[0]?.unreadCount || 0);
 }
@@ -1120,27 +1272,29 @@ async function loadCampaignMaps(campaignId, viewerUserId, isOwner) {
        maps.id,
        maps.map_name AS mapName,
        maps.player_visible AS playerVisible,
-       map_invite.user_id AS mapInviteUserId
+       maps.visibility_level AS visibilityLevel
      FROM maps
-     LEFT JOIN map_campaign_invites map_invite
-       ON map_invite.map_id = maps.id
-      AND map_invite.user_id = ?
      WHERE maps.campaign_id = ?
        AND (
          ? = TRUE
-         OR maps.player_visible = TRUE
-         OR map_invite.user_id IS NOT NULL
+         OR maps.visibility_level IN ('public', 'campaign', 'demo')
+         OR (maps.visibility_level = 'hidden' AND maps.player_visible = TRUE)
        )
      ORDER BY maps.map_name`,
-    [viewerUserId, campaignId, isOwner]
+    [campaignId, isOwner]
   );
 
   return rows.map((row) => ({
     id: Number(row.id),
     name: row.mapName,
     playerVisible: Boolean(row.playerVisible),
-    invited: Boolean(row.mapInviteUserId)
+    visibilityLevel: normalizeMapVisibilityLevel(row)
   }));
+}
+
+function normalizeMapVisibilityLevel(row) {
+  if (mapVisibilityLevelSchema.safeParse(row.visibilityLevel).success) return row.visibilityLevel;
+  return row.playerVisible ? 'campaign' : 'hidden';
 }
 
 async function insertForumPost(connection, threadId, authorUserId, body) {
@@ -1267,11 +1421,13 @@ function parseJson(value, fallback) {
   }
 }
 
-async function loadForumThread(threadId, campaignId, viewerUserId = '') {
+async function loadForumThread(threadId, campaignId, viewerUserId = '', access = null) {
+  const effectiveAccess = access ?? await loadCampaignForumAccessByViewerUserId(campaignId, viewerUserId);
   const threadRows = await query(
     `SELECT
        thread.id,
        thread.title,
+       thread.visibility_level AS visibilityLevel,
        thread.map_id AS mapId,
        thread.created_by_user_id AS createdByUserId,
        creator.display_name AS createdByDisplayName,
@@ -1298,6 +1454,7 @@ async function loadForumThread(threadId, campaignId, viewerUserId = '') {
   );
   const thread = threadRows[0];
   if (!thread) return null;
+  const permissions = threadPermissions(thread.visibilityLevel, effectiveAccess);
 
   const postRows = await query(
      `SELECT
@@ -1386,7 +1543,8 @@ async function loadForumThread(threadId, campaignId, viewerUserId = '') {
       postCount: postRows.length,
       latestPostAt: postRows.at(-1)?.createdAt || thread.updatedAt,
       unreadCount: unreadPosts.length
-    }),
+    }, permissions),
+    permissions,
     firstUnreadPostId: unreadPosts[0] ? Number(unreadPosts[0].id) : null,
     lastReadPostId: lastReadPostId || null,
     subscribed: Boolean(subscriptionRows.length),
@@ -1410,15 +1568,18 @@ async function loadForumThread(threadId, campaignId, viewerUserId = '') {
       editedAt: post.editedAt,
       createdAt: post.createdAt,
       updatedAt: post.updatedAt,
-      rolls: rollsByPostId.get(Number(post.id)) || []
+      rolls: rollsByPostId.get(Number(post.id)) || [],
+      canEdit: permissions.canEditOwnPosts && post.authorUserId === viewerUserId && !post.deletedAt,
+      canDelete: (post.authorUserId === viewerUserId || effectiveAccess?.isOwner) && !post.deletedAt
     }))
   };
 }
 
-function formatThreadSummary(row) {
+function formatThreadSummary(row, permissions = null) {
   return {
     id: Number(row.id),
     title: row.title,
+    visibilityLevel: normalizeForumThreadVisibility(row.visibilityLevel),
     mapId: row.mapId ? Number(row.mapId) : null,
     mapName: row.mapName || '',
     createdByUserId: row.createdByUserId,
@@ -1436,12 +1597,44 @@ function formatThreadSummary(row) {
     postCount: Number(row.postCount || 0),
     unreadCount: Number(row.unreadCount || 0),
     hasUnread: Number(row.unreadCount || 0) > 0,
-    latestPostAt: row.latestPostAt || row.updatedAt
+    latestPostAt: row.latestPostAt || row.updatedAt,
+    permissions: permissions ?? threadPermissions(row.visibilityLevel, null)
   };
 }
 
 function userPublicId(user) {
-  return `user:${user.id}`;
+  return user?.id ? `user:${user.id}` : '';
+}
+
+function normalizeForumThreadVisibility(visibilityLevel) {
+  if (['demo', 'public', 'campaign', 'hidden'].includes(visibilityLevel)) return visibilityLevel;
+  return 'campaign';
+}
+
+function threadPermissions(visibilityLevel, access = null) {
+  const normalized = normalizeForumThreadVisibility(visibilityLevel);
+  const isMember = Boolean(access?.isMember);
+  const isOwner = Boolean(access?.isOwner);
+  const signedIn = Boolean(access?.viewerUserId || isMember || isOwner);
+  const canView =
+    normalized === 'demo' ||
+    normalized === 'public' ||
+    (normalized === 'campaign' && isMember) ||
+    (normalized === 'hidden' && isOwner);
+  const canPost =
+    signedIn &&
+    (
+      normalized === 'demo' ||
+      ((normalized === 'public' || normalized === 'campaign') && isMember) ||
+      (normalized === 'hidden' && isOwner)
+    );
+
+  return {
+    canView,
+    canPost,
+    canEditOwnPosts: canPost,
+    canManageVisibility: isOwner
+  };
 }
 
 async function loadForumAuthorLabels(campaignId, authorUserIds) {

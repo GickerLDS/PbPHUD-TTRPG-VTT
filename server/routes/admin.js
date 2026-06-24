@@ -9,6 +9,22 @@ const roleSchema = z.object({
   communityRole: z.enum(['admin', 'moderator', 'community_member'])
 });
 
+const demoAssignmentSchema = z.object({
+  campaignId: z.number().int().positive().nullable(),
+  mapId: z.number().int().positive().nullable(),
+  threadId: z.number().int().positive().nullable()
+});
+
+const DEMO_ASSIGNMENT_KEY = 'demo_assignment';
+
+adminRouter.get('/demo-assignment', async (_req, res, next) => {
+  try {
+    res.json({ demoAssignment: await loadDemoAssignment() });
+  } catch (error) {
+    next(error);
+  }
+});
+
 adminRouter.use((req, res, next) => {
   if (!req.user) {
     res.status(401).json({ error: 'Sign in required' });
@@ -19,6 +35,114 @@ adminRouter.use((req, res, next) => {
     return;
   }
   next();
+});
+
+adminRouter.get('/demo-assignment/options', async (_req, res, next) => {
+  try {
+    const [campaignRows, mapRows, threadRows] = await Promise.all([
+      query(
+        `SELECT id, name
+         FROM campaigns
+         ORDER BY name, id`
+      ),
+      query(
+        `SELECT id, campaign_id AS campaignId, map_name AS mapName, visibility_level AS visibilityLevel
+         FROM maps
+         WHERE campaign_id IS NOT NULL
+           AND visibility_level IN ('public', 'demo')
+         ORDER BY map_name, id`
+      ),
+      query(
+        `SELECT id, campaign_id AS campaignId, map_id AS mapId, title, visibility_level AS visibilityLevel
+         FROM campaign_forum_threads
+         WHERE visibility_level IN ('public', 'demo')
+         ORDER BY title, id`
+      )
+    ]);
+
+    res.json({
+      demoAssignment: await loadDemoAssignment(),
+      campaigns: campaignRows.map((row) => ({
+        id: Number(row.id),
+        name: row.name
+      })),
+      maps: mapRows.map((row) => ({
+        id: Number(row.id),
+        campaignId: Number(row.campaignId),
+        name: row.mapName,
+        visibilityLevel: row.visibilityLevel
+      })),
+      threads: threadRows.map((row) => ({
+        id: Number(row.id),
+        campaignId: Number(row.campaignId),
+        mapId: row.mapId ? Number(row.mapId) : null,
+        title: row.title,
+        visibilityLevel: row.visibilityLevel
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRouter.patch('/demo-assignment', async (req, res, next) => {
+  try {
+    const body = validate(demoAssignmentSchema, req.body);
+    if (!body.campaignId && (body.mapId || body.threadId)) {
+      res.status(400).json({ error: 'Choose a campaign before choosing a map or forum thread.' });
+      return;
+    }
+
+    if (body.campaignId) {
+      const campaignRows = await query(`SELECT id FROM campaigns WHERE id = ? LIMIT 1`, [body.campaignId]);
+      if (!campaignRows.length) {
+        res.status(400).json({ error: 'Demo campaign was not found.' });
+        return;
+      }
+    }
+
+    if (body.mapId) {
+      const mapRows = await query(
+        `SELECT id
+         FROM maps
+         WHERE id = ?
+           AND campaign_id = ?
+           AND visibility_level IN ('public', 'demo')
+         LIMIT 1`,
+        [body.mapId, body.campaignId]
+      );
+      if (!mapRows.length) {
+        res.status(400).json({ error: 'Demo map must belong to the selected campaign and be Public or Demo visibility.' });
+        return;
+      }
+    }
+
+    if (body.threadId) {
+      const threadRows = await query(
+        `SELECT id, map_id AS mapId
+         FROM campaign_forum_threads
+         WHERE id = ?
+           AND campaign_id = ?
+           AND visibility_level IN ('public', 'demo')
+         LIMIT 1`,
+        [body.threadId, body.campaignId]
+      );
+      const thread = threadRows[0];
+      if (!thread) {
+        res.status(400).json({ error: 'Demo forum thread must belong to the selected campaign and be Public or Demo visibility.' });
+        return;
+      }
+      if (body.mapId && Number(thread.mapId) !== Number(body.mapId)) {
+        res.status(400).json({ error: 'Demo forum thread must be assigned to the selected map.' });
+        return;
+      }
+    }
+
+    await saveDemoAssignment(body);
+    res.json({ demoAssignment: await loadDemoAssignment() });
+  } catch (error) {
+    next(error);
+  }
 });
 
 adminRouter.get('/users', async (_req, res, next) => {
@@ -56,6 +180,67 @@ adminRouter.get('/users', async (_req, res, next) => {
     next(error);
   }
 });
+
+async function loadDemoAssignment() {
+  const rows = await query(
+    `SELECT setting_json AS settingJson FROM site_settings WHERE setting_key = ? LIMIT 1`,
+    [DEMO_ASSIGNMENT_KEY]
+  );
+  const assignment = parseDemoAssignment(rows[0]?.settingJson);
+  if (!assignment.campaignId) return assignment;
+
+  const detailRows = await query(
+    `SELECT
+       campaign.name AS campaignName,
+       maps.map_name AS mapName,
+       thread.title AS threadTitle
+     FROM campaigns campaign
+     LEFT JOIN maps ON maps.id = ? AND maps.campaign_id = campaign.id
+     LEFT JOIN campaign_forum_threads thread ON thread.id = ? AND thread.campaign_id = campaign.id
+     WHERE campaign.id = ?
+     LIMIT 1`,
+    [assignment.mapId, assignment.threadId, assignment.campaignId]
+  );
+  const details = detailRows[0] || {};
+  return {
+    ...assignment,
+    campaignName: details.campaignName || '',
+    mapName: details.mapName || '',
+    threadTitle: details.threadTitle || ''
+  };
+}
+
+async function saveDemoAssignment(assignment) {
+  await query(
+    `INSERT INTO site_settings (setting_key, setting_json)
+     VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE setting_json = VALUES(setting_json)`,
+    [DEMO_ASSIGNMENT_KEY, JSON.stringify(assignment)]
+  );
+}
+
+function parseDemoAssignment(settingJson) {
+  try {
+    const parsed = settingJson ? JSON.parse(settingJson) : {};
+    return {
+      campaignId: parsed.campaignId ? Number(parsed.campaignId) : null,
+      mapId: parsed.mapId ? Number(parsed.mapId) : null,
+      threadId: parsed.threadId ? Number(parsed.threadId) : null,
+      campaignName: '',
+      mapName: '',
+      threadTitle: ''
+    };
+  } catch (_error) {
+    return {
+      campaignId: null,
+      mapId: null,
+      threadId: null,
+      campaignName: '',
+      mapName: '',
+      threadTitle: ''
+    };
+  }
+}
 
 adminRouter.patch('/users/:userId/role', async (req, res, next) => {
   try {

@@ -191,6 +191,18 @@ export async function assignForumThreadMap(campaignId, threadId, mapId) {
   return parseResponse(response);
 }
 
+export async function setForumThreadVisibility(campaignId, threadId, visibilityLevel) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/visibility`,
+    {
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ visibilityLevel })
+    }
+  );
+  return parseResponse(response);
+}
+
 export async function listPublicForumSections() {
   const response = await fetch('/api/public-forums/sections', {
     headers: viewerHeaders()
@@ -265,6 +277,29 @@ export async function setPublicForumThreadSticky(threadId, sticky) {
 export async function listAdminUsers() {
   const response = await fetch('/api/admin/users', {
     headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function getDemoAssignment() {
+  const response = await fetch('/api/admin/demo-assignment', {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function getAdminDemoAssignmentOptions() {
+  const response = await fetch('/api/admin/demo-assignment/options', {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function updateDemoAssignment(payload) {
+  const response = await fetch('/api/admin/demo-assignment', {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
   });
   return parseResponse(response);
 }
@@ -378,11 +413,11 @@ export async function getMapById(mapId) {
   return parseResponse(response);
 }
 
-export async function setMapVisibility(mapId, playerVisible) {
+export async function setMapVisibility(mapId, visibilityLevel) {
   const response = await fetch(`/api/maps/${encodeURIComponent(mapId)}/visibility`, {
     method: 'PATCH',
     headers: jsonHeaders(),
-    body: JSON.stringify({ playerVisible })
+    body: JSON.stringify({ visibilityLevel })
   });
   return parseResponse(response);
 }

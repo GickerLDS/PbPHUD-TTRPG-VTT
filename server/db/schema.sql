@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS maps (
   grid_height SMALLINT UNSIGNED NULL,
   owner_user_id VARCHAR(191) NULL,
   player_visible BOOLEAN NOT NULL DEFAULT FALSE,
+  visibility_level VARCHAR(20) NOT NULL DEFAULT 'hidden',
   legacy_map_data LONGTEXT NOT NULL,
   legacy_map_data2 LONGTEXT NOT NULL,
   version INT UNSIGNED NOT NULL DEFAULT 1,
@@ -68,10 +69,12 @@ ALTER TABLE maps ADD COLUMN IF NOT EXISTS grid_height SMALLINT UNSIGNED NULL AFT
 ALTER TABLE maps ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(191) NULL AFTER grid_height;
 ALTER TABLE maps ADD COLUMN IF NOT EXISTS campaign_id BIGINT UNSIGNED NULL AFTER id;
 ALTER TABLE maps ADD COLUMN IF NOT EXISTS player_visible BOOLEAN NOT NULL DEFAULT FALSE AFTER owner_user_id;
+ALTER TABLE maps ADD COLUMN IF NOT EXISTS visibility_level VARCHAR(20) NOT NULL DEFAULT 'hidden' AFTER player_visible;
 ALTER TABLE maps ADD INDEX IF NOT EXISTS idx_maps_owner (owner_user_id);
 ALTER TABLE maps ADD INDEX IF NOT EXISTS idx_maps_campaign (campaign_id);
 UPDATE maps SET grid_width = grid_size WHERE grid_width IS NULL;
 UPDATE maps SET grid_height = grid_size WHERE grid_height IS NULL;
+UPDATE maps SET visibility_level = 'campaign' WHERE visibility_level = 'hidden' AND player_visible = TRUE;
 
 CREATE TABLE IF NOT EXISTS campaigns (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -135,6 +138,7 @@ CREATE TABLE IF NOT EXISTS campaign_forum_threads (
   campaign_id BIGINT UNSIGNED NOT NULL,
   map_id BIGINT UNSIGNED NULL,
   title VARCHAR(180) NOT NULL,
+  visibility_level VARCHAR(20) NOT NULL DEFAULT 'campaign',
   created_by_user_id VARCHAR(191) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -148,6 +152,8 @@ CREATE TABLE IF NOT EXISTS campaign_forum_threads (
     FOREIGN KEY (map_id) REFERENCES maps (id)
     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE campaign_forum_threads ADD COLUMN IF NOT EXISTS visibility_level VARCHAR(20) NOT NULL DEFAULT 'campaign' AFTER title;
 
 CREATE TABLE IF NOT EXISTS campaign_forum_posts (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -259,6 +265,14 @@ CREATE TABLE IF NOT EXISTS map_settings (
   CONSTRAINT fk_map_settings_map
     FOREIGN KEY (map_id) REFERENCES maps (id)
     ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS site_settings (
+  setting_key VARCHAR(80) NOT NULL,
+  setting_json LONGTEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (setting_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS map_editor_state (

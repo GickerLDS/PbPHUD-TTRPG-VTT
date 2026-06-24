@@ -6,6 +6,7 @@ import {
   createEntitySchema,
   createMapSchema,
   entityPatchSchema,
+  mapVisibilitySchema,
   mapShareSchema,
   replaceMapSchema,
   tilePatchSchema,
@@ -26,13 +27,16 @@ mapsRouter.get('/', async (req, res, next) => {
         COALESCE(maps.grid_width, maps.grid_size) AS gridWidth,
         COALESCE(maps.grid_height, maps.grid_size) AS gridHeight,
         maps.owner_user_id AS ownerUserId,
+        maps.player_visible AS playerVisible,
+        maps.visibility_level AS visibilityLevel,
         maps.version,
         maps.updated_at AS updatedAt,
         viewer_share.user_id AS viewerShareUserId,
         vtt_campaigns.external_campaign_id AS campaignId,
         vtt_campaigns.name AS campaignName,
         vtt_campaigns.owner_user_id AS campaignOwnerUserId,
-        viewer_member.user_id AS viewerMemberUserId
+        viewer_member.user_id AS viewerMemberUserId,
+        viewer_user.community_role AS viewerCommunityRole
       FROM maps
       LEFT JOIN map_shares viewer_share
         ON viewer_share.map_id = maps.id
@@ -44,13 +48,16 @@ mapsRouter.get('/', async (req, res, next) => {
         ON viewer_member.provider = vtt_campaigns.provider
        AND viewer_member.external_campaign_id = vtt_campaigns.external_campaign_id
        AND viewer_member.user_id = ?
+      LEFT JOIN users viewer_user
+        ON CONCAT('user:', viewer_user.id) = ?
       WHERE maps.owner_user_id IS NULL
          OR maps.owner_user_id = ?
          OR viewer_share.user_id IS NOT NULL
+         OR maps.visibility_level IN ('public', 'demo')
          OR vtt_campaigns.owner_user_id = ?
          OR viewer_member.user_id IS NOT NULL
       ORDER BY maps.group_name, maps.map_name
-    `, [viewerUserId, viewerUserId, viewerUserId, viewerUserId]);
+    `, [viewerUserId, viewerUserId, viewerUserId, viewerUserId, viewerUserId]);
     res.json({
       maps: rows.map((row) => ({
         ...row,
@@ -110,10 +117,6 @@ mapsRouter.get('/:groupName/:mapName', async (req, res, next) => {
 
 mapsRouter.get('/:mapId', async (req, res, next) => {
   try {
-    if (!req.user) {
-      res.status(401).json({ error: 'Sign in required' });
-      return;
-    }
     const viewerUserId = getViewerUserId(req);
     const map = await getMapById(req.params.mapId, viewerUserId);
     if (!map) {
@@ -143,13 +146,15 @@ mapsRouter.patch('/:mapId/visibility', async (req, res, next) => {
       res.status(404).json({ error: 'Map not found' });
       return;
     }
-    const permissions = permissionsFromRow(map, viewerUserId);
-    if (!permissions.canEditMaps) {
-      res.status(403).json({ error: 'Only the map owner can change map visibility' });
+    if (!canManageMapVisibility(map, viewerUserId)) {
+      res.status(403).json({ error: 'Only the campaign owner can change map visibility' });
       return;
     }
-    const visible = Boolean(req.body?.playerVisible);
-    await query(`UPDATE maps SET player_visible = ? WHERE id = ?`, [visible, req.params.mapId]);
+    const body = validate(mapVisibilitySchema, req.body);
+    await query(
+      `UPDATE maps SET visibility_level = ?, player_visible = ? WHERE id = ?`,
+      [body.visibilityLevel, body.visibilityLevel !== 'hidden', req.params.mapId]
+    );
     const updatedMap = await getMapById(req.params.mapId, viewerUserId);
     res.json({ map: await presentMap(updatedMap, viewerUserId) });
   } catch (error) {
@@ -408,6 +413,7 @@ async function getMap(groupName, mapName, viewerUserId = '') {
        maps.grid_height,
        maps.owner_user_id,
        maps.player_visible,
+       maps.visibility_level,
        maps.legacy_map_data,
        maps.legacy_map_data2,
        maps.version,
@@ -422,6 +428,7 @@ async function getMap(groupName, mapName, viewerUserId = '') {
        vtt_campaigns.owner_user_id AS campaign_owner_user_id,
        vtt_campaigns.owner_display_name AS campaign_owner_display_name,
        viewer_member.user_id AS viewer_member_user_id,
+       viewer_user.community_role AS viewer_community_role,
        map_editor_state.cell_size,
        map_editor_state.background_json,
        map_editor_state.drawings_json,
@@ -445,9 +452,11 @@ async function getMap(groupName, mapName, viewerUserId = '') {
        ON viewer_member.provider = vtt_campaigns.provider
       AND viewer_member.external_campaign_id = vtt_campaigns.external_campaign_id
       AND viewer_member.user_id = ?
+     LEFT JOIN users viewer_user
+       ON CONCAT('user:', viewer_user.id) = ?
      WHERE group_name = ? AND map_name = ?
      LIMIT 1`,
-    [viewerUserId, viewerUserId, viewerUserId, viewerUserId, groupName, mapName]
+    [viewerUserId, viewerUserId, viewerUserId, viewerUserId, viewerUserId, groupName, mapName]
   );
   return rows[0] ?? null;
 }
@@ -464,6 +473,7 @@ async function getMapById(mapId, viewerUserId = '') {
        maps.grid_height,
        maps.owner_user_id,
        maps.player_visible,
+       maps.visibility_level,
        maps.legacy_map_data,
        maps.legacy_map_data2,
        maps.version,
@@ -478,6 +488,7 @@ async function getMapById(mapId, viewerUserId = '') {
        vtt_campaigns.owner_user_id AS campaign_owner_user_id,
        vtt_campaigns.owner_display_name AS campaign_owner_display_name,
        viewer_member.user_id AS viewer_member_user_id,
+       viewer_user.community_role AS viewer_community_role,
        map_editor_state.cell_size,
        map_editor_state.background_json,
        map_editor_state.drawings_json,
@@ -501,9 +512,11 @@ async function getMapById(mapId, viewerUserId = '') {
        ON viewer_member.provider = vtt_campaigns.provider
       AND viewer_member.external_campaign_id = vtt_campaigns.external_campaign_id
       AND viewer_member.user_id = ?
+     LEFT JOIN users viewer_user
+       ON CONCAT('user:', viewer_user.id) = ?
      WHERE maps.id = ?
      LIMIT 1`,
-    [viewerUserId, viewerUserId, viewerUserId, viewerUserId, mapId]
+    [viewerUserId, viewerUserId, viewerUserId, viewerUserId, viewerUserId, mapId]
   );
   return rows[0] ?? null;
 }
@@ -545,6 +558,7 @@ async function presentMap(row, viewerUserId = '') {
     gridHeight: Number(row.grid_height || row.grid_size),
     ownerUserId: row.owner_user_id || row.campaign_owner_user_id || '',
     playerVisible: Boolean(row.player_visible),
+    visibilityLevel: normalizeVisibilityLevel(row),
     invitedUserIds: await loadMapInviteUserIds(row.id),
     sharedUserIds: await loadSharedUserIds(row.id),
     cellSize: Number(row.cell_size || 50),
@@ -603,17 +617,26 @@ function permissionsFromRow(row, viewerUserId = '') {
   const shareUserId = row.viewer_share_user_id ?? row.viewerShareUserId ?? '';
   const mapInviteUserId = row.map_invite_user_id ?? row.mapInviteUserId ?? '';
   const campaignId = row.campaign_id ?? row.campaignId ?? row.legacy_campaign_id ?? row.legacyCampaignId ?? '';
-  const playerVisible = Boolean(row.player_visible ?? row.playerVisible);
+  const visibilityLevel = normalizeVisibilityLevel(row);
   const hasOwner = Boolean(ownerUserId || campaignOwnerUserId);
   const legacyOpen = !hasOwner && !campaignId;
-  const canEditMaps = legacyOpen || Boolean(viewerUserId && (ownerUserId === viewerUserId || campaignOwnerUserId === viewerUserId));
-  const canViewCampaignMap = Boolean(
+  const isOwner = Boolean(viewerUserId && (ownerUserId === viewerUserId || campaignOwnerUserId === viewerUserId));
+  const isCampaignMember = Boolean(
     viewerUserId &&
-    (localMemberUserId === viewerUserId || memberUserId === viewerUserId) &&
-    (playerVisible || mapInviteUserId === viewerUserId)
+    (isOwner || localMemberUserId === viewerUserId || memberUserId === viewerUserId)
   );
-  const isShared = Boolean(viewerUserId && (shareUserId === viewerUserId || canViewCampaignMap));
-  const canViewMap = legacyOpen || canEditMaps || isShared;
+  const isCampaignMap = Boolean(campaignId);
+  const isDemo = visibilityLevel === 'demo';
+  const isSiteAdmin = row.viewer_community_role === 'admin' || row.viewerCommunityRole === 'admin';
+  const canEditCampaignMap = isCampaignMap && visibilityLevel !== 'hidden' && (isCampaignMember || isDemo);
+  const canEditMaps = legacyOpen || isOwner || canEditCampaignMap || isDemo;
+  const canViewCampaignMap =
+    visibilityLevel === 'public' ||
+    visibilityLevel === 'demo' ||
+    (visibilityLevel === 'campaign' && isCampaignMember) ||
+    (visibilityLevel === 'hidden' && isOwner);
+  const isShared = Boolean(!isCampaignMap && viewerUserId && (shareUserId === viewerUserId || mapInviteUserId === viewerUserId));
+  const canViewMap = legacyOpen || (isCampaignMap ? canViewCampaignMap : (canEditMaps || isShared));
 
   return {
     canViewMap,
@@ -626,8 +649,28 @@ function permissionsFromRow(row, viewerUserId = '') {
     canCreateEntities: canViewMap,
     canUseMeasurements: canViewMap,
     canControlEntities: canViewMap,
-    canShareMap: canEditMaps
+    canShareMap: canEditMaps,
+    canDeleteMaps: isDemo ? isSiteAdmin : (legacyOpen || isOwner)
   };
+}
+
+function canManageMapVisibility(row, viewerUserId = '') {
+  const ownerUserId = row.owner_user_id ?? row.ownerUserId ?? '';
+  const campaignOwnerUserId =
+    row.local_campaign_owner_user_id ??
+    row.localCampaignOwnerUserId ??
+    row.campaign_owner_user_id ??
+    row.campaignOwnerUserId ??
+    '';
+  return Boolean(viewerUserId && (ownerUserId === viewerUserId || campaignOwnerUserId === viewerUserId));
+}
+
+function normalizeVisibilityLevel(row) {
+  const visibilityLevel = row.visibility_level ?? row.visibilityLevel;
+  if (visibilityLevel === 'public' || visibilityLevel === 'campaign' || visibilityLevel === 'hidden' || visibilityLevel === 'demo') {
+    return visibilityLevel;
+  }
+  return row.player_visible ?? row.playerVisible ? 'campaign' : 'hidden';
 }
 
 function noPermissions() {
@@ -642,7 +685,8 @@ function noPermissions() {
     canCreateEntities: false,
     canUseMeasurements: false,
     canControlEntities: false,
-    canShareMap: false
+    canShareMap: false,
+    canDeleteMaps: false
   };
 }
 

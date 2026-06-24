@@ -7,6 +7,7 @@ const gridDimension = z.number().int().min(5).max(99);
 const tileCode = z.string().trim().regex(/^[A-Za-z0-9#]{6}$/);
 const layer = z.string().trim().min(1).max(1).regex(/^[A-Za-z0-9]$/);
 const largeString = z.string().max(10_000_000);
+export const mapVisibilityLevelSchema = z.enum(['public', 'campaign', 'hidden', 'demo']);
 const point = z.object({
   x: z.number(),
   y: z.number()
@@ -62,6 +63,13 @@ export const createMapSchema = z.object({
 export const mapShareSchema = z.object({
   userId: z.string().trim().min(1).max(191)
 });
+
+export const mapVisibilitySchema = z.object({
+  visibilityLevel: mapVisibilityLevelSchema.optional(),
+  playerVisible: z.boolean().optional()
+}).transform((body) => ({
+  visibilityLevel: body.visibilityLevel ?? (body.playerVisible ? 'campaign' : 'hidden')
+}));
 
 export const replaceMapSchema = z.object({
   gridSize: gridSize.optional(),

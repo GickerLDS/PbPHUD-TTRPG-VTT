@@ -15,7 +15,9 @@ import {
   deleteForumPost,
   deletePublicForumPost,
   getAuthConfig,
+  getAdminDemoAssignmentOptions,
   getCurrentUser,
+  getDemoAssignment,
   getForumThread,
   getMap,
   getMapById,
@@ -42,6 +44,7 @@ import {
   saveMap,
   sendContactMessage,
   sendForumThreadTestNotification,
+  setForumThreadVisibility,
   setPublicForumThreadSticky,
   setMapVisibility,
   setViewerUserId,
@@ -54,6 +57,7 @@ import {
   unsubscribeForumThread,
   unshareMap,
   updateAccountProfile,
+  updateDemoAssignment,
   verifyEmail
 } from './api.js';
 import { EntityPanel } from './components/EntityPanel.jsx';
@@ -76,6 +80,18 @@ const TOOLS = [
 ];
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const MAP_VISIBILITY_LEVELS = [
+  { value: 'public', label: 'Public' },
+  { value: 'campaign', label: 'Campaign Only' },
+  { value: 'hidden', label: 'Hidden' },
+  { value: 'demo', label: 'Demo' }
+];
+const FORUM_THREAD_VISIBILITY_LEVELS = [
+  { value: 'demo', label: 'Demo' },
+  { value: 'public', label: 'Public' },
+  { value: 'campaign', label: 'Campaign' },
+  { value: 'hidden', label: 'Hidden' }
+];
 
 const defaultBackgroundImage = {
   src: '',
@@ -90,6 +106,7 @@ function App() {
   const mapRouteMatch = path.match(/^\/maps\/(\d+)$/);
   const forumRouteMatch = path.match(/^\/campaigns\/(\d+)\/forums$/);
   const isPublicForumsRoute = path === '/forums';
+  const isDemoRoute = path === '/demo';
   const isAuthRoute = path === '/auth';
   const isContactRoute = path === '/contact';
   const isDashboardRoute = path === '/dashboard';
@@ -136,8 +153,6 @@ function App() {
   const [campaignDraft, setCampaignDraft] = useState({ name: '' });
   const [campaignMemberDraft, setCampaignMemberDraft] = useState({});
   const [campaignMapDraft, setCampaignMapDraft] = useState({});
-  const [dashboardForumCampaignId, setDashboardForumCampaignId] = useState(null);
-  const [dashboardCastCampaignId, setDashboardCastCampaignId] = useState(null);
   const [campaignCast, setCampaignCast] = useState({});
   const [campaignCastDraft, setCampaignCastDraft] = useState({});
   const [portraitCrop, setPortraitCrop] = useState(null);
@@ -145,6 +160,7 @@ function App() {
   const [campaignPostIdentities, setCampaignPostIdentities] = useState({});
   const [campaignForumDraft, setCampaignForumDraft] = useState({});
   const [centerTab, setCenterTab] = useState('map');
+  const [dashboardModal, setDashboardModal] = useState(null);
   const [mapForumThreads, setMapForumThreads] = useState([]);
   const [selectedForumThread, setSelectedForumThread] = useState(null);
   const [forumReplyDraft, setForumReplyDraft] = useState('');
@@ -159,6 +175,9 @@ function App() {
   const [publicForumThreadDraft, setPublicForumThreadDraft] = useState({ title: '', body: '' });
   const [publicForumReplyDraft, setPublicForumReplyDraft] = useState('');
   const [adminUsers, setAdminUsers] = useState([]);
+  const [demoAssignment, setDemoAssignment] = useState(null);
+  const [adminDemoOptions, setAdminDemoOptions] = useState({ campaigns: [], maps: [], threads: [] });
+  const [adminDemoDraft, setAdminDemoDraft] = useState({ campaignId: '', mapId: '', threadId: '' });
   const [testNotificationInfo, setTestNotificationInfo] = useState(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [accountDraft, setAccountDraft] = useState(buildAccountDraft(null));
@@ -219,6 +238,7 @@ function App() {
 
   useEffect(() => {
     refreshMaps();
+    refreshDemoAssignment();
     loadAuth();
     const mode = new URLSearchParams(window.location.search).get('mode');
     if (mode === 'register' || mode === 'login') setAuthMode(mode);
@@ -233,14 +253,23 @@ function App() {
   useEffect(() => {
     if (!authUser) return;
     refreshCampaigns();
-    if (mapRouteMatch?.[1]) {
-      loadMapById(mapRouteMatch[1]);
-    }
-    if (forumRouteMatch?.[1]) {
-      refreshCampaignForumThreads(forumRouteMatch[1]);
-      refreshCampaignPostIdentities(forumRouteMatch[1]);
-    }
   }, [authUser?.id, path]);
+
+  useEffect(() => {
+    if (!forumRouteMatch?.[1]) return;
+    refreshCampaignForumThreads(forumRouteMatch[1]);
+    if (authUser) refreshCampaignPostIdentities(forumRouteMatch[1]);
+  }, [forumRouteMatch?.[1], authUser?.id]);
+
+  useEffect(() => {
+    if (!mapRouteMatch?.[1]) return;
+    loadMapById(mapRouteMatch[1]);
+  }, [mapRouteMatch?.[1], viewerUserId]);
+
+  useEffect(() => {
+    if (!isDemoRoute || demoAssignment === null) return;
+    loadDemoPage();
+  }, [isDemoRoute, demoAssignment?.campaignId, demoAssignment?.mapId, demoAssignment?.threadId, viewerUserId]);
 
   useEffect(() => {
     if (!isPublicForumsRoute) return;
@@ -250,6 +279,7 @@ function App() {
   useEffect(() => {
     if (!authUser || !isAdminRoute || authUser.communityRole !== 'admin') return;
     refreshAdminUsers();
+    refreshAdminDemoOptions();
   }, [authUser?.id, authUser?.communityRole, isAdminRoute]);
 
   useEffect(() => {
@@ -404,7 +434,7 @@ function App() {
     try {
       const data = await listMaps();
       setMaps(data.maps);
-      if (!activeMap && data.maps[0]) {
+      if (!activeMap && data.maps[0] && !mapRouteMatch && !isDemoRoute) {
         await loadMap(data.maps[0].groupName, data.maps[0].mapName);
       }
     } catch (err) {
@@ -593,14 +623,64 @@ function App() {
     }
   }
 
+  async function refreshDemoAssignment() {
+    try {
+      const data = await getDemoAssignment();
+      setDemoAssignment(data.demoAssignment);
+      return data.demoAssignment;
+    } catch (err) {
+      setDemoAssignment({});
+      showError(err);
+      return {};
+    }
+  }
+
+  async function refreshAdminDemoOptions() {
+    try {
+      const data = await getAdminDemoAssignmentOptions();
+      setAdminDemoOptions({
+        campaigns: data.campaigns || [],
+        maps: data.maps || [],
+        threads: data.threads || []
+      });
+      setAdminDemoDraft(buildDemoAssignmentDraft(data.demoAssignment));
+      setDemoAssignment(data.demoAssignment);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function loadDemoPage() {
+    const assignment = demoAssignment || {};
+    try {
+      if (assignment.mapId) {
+        const map = await loadMapById(assignment.mapId);
+        if (assignment.campaignId && assignment.threadId) {
+          setCenterTab('forums');
+          const threadData = await getForumThread(assignment.campaignId, assignment.threadId);
+          setSelectedForumThread(threadData.thread);
+          setForumReplyDraft('');
+        }
+        return map;
+      }
+      return await loadMap('demo', 'map1');
+    } catch (err) {
+      showError(err);
+      return null;
+    }
+  }
+
   async function loadMapById(mapId) {
     try {
       const data = await getMapById(mapId);
       setActiveMap(data.map);
       setMessage(`Loaded ${data.map.mapName}`);
       setError('');
+      return data.map;
     } catch (err) {
       showError(err);
+      return null;
     }
   }
 
@@ -626,7 +706,9 @@ function App() {
       setMessage(`Invited ${userId}`);
       setError('');
       await refreshCampaigns();
-      if (dashboardCastCampaignId === campaignId) await refreshCampaignCast(campaignId);
+      if (dashboardModal?.type === 'cast' && Number(dashboardModal.campaignId) === Number(campaignId)) {
+        await refreshCampaignCast(campaignId);
+      }
     } catch (err) {
       showError(err);
     }
@@ -651,21 +733,17 @@ function App() {
     }
   }
 
-  async function toggleCampaignForums(campaignId) {
-    const nextCampaignId = dashboardForumCampaignId === campaignId ? null : campaignId;
-    setDashboardForumCampaignId(nextCampaignId);
-    if (nextCampaignId) {
+  async function openDashboardModal(type, campaign) {
+    setDashboardModal({ type, campaignId: campaign.id });
+    if (type === 'preview' || type === 'permissions') {
       await Promise.all([
-        refreshCampaignForumThreads(nextCampaignId),
-        refreshCampaignPostIdentities(nextCampaignId)
+        refreshCampaignForumThreads(campaign.id),
+        refreshCampaignPostIdentities(campaign.id)
       ]);
     }
-  }
-
-  async function toggleCampaignCast(campaignId) {
-    const nextCampaignId = dashboardCastCampaignId === campaignId ? null : campaignId;
-    setDashboardCastCampaignId(nextCampaignId);
-    if (nextCampaignId) await refreshCampaignCast(nextCampaignId);
+    if (type === 'cast') {
+      await refreshCampaignCast(campaign.id);
+    }
   }
 
   async function refreshCampaignCast(campaignId) {
@@ -833,6 +911,40 @@ function App() {
     }
   }
 
+  function handleAdminDemoDraftChange(field, value) {
+    setAdminDemoDraft((current) => {
+      const next = { ...current, [field]: value };
+      if (field === 'campaignId') {
+        next.mapId = '';
+        next.threadId = '';
+      }
+      if (field === 'mapId') {
+        const selectedThread = adminDemoOptions.threads.find((thread) => String(thread.id) === String(next.threadId));
+        if (!value || String(selectedThread?.mapId || '') !== String(value)) next.threadId = '';
+      }
+      return next;
+    });
+  }
+
+  async function handleSaveDemoAssignment(event) {
+    event.preventDefault();
+    try {
+      const payload = {
+        campaignId: adminDemoDraft.campaignId ? Number(adminDemoDraft.campaignId) : null,
+        mapId: adminDemoDraft.mapId ? Number(adminDemoDraft.mapId) : null,
+        threadId: adminDemoDraft.threadId ? Number(adminDemoDraft.threadId) : null
+      };
+      const data = await updateDemoAssignment(payload);
+      setDemoAssignment(data.demoAssignment);
+      setAdminDemoDraft(buildDemoAssignmentDraft(data.demoAssignment));
+      setMessage('Demo link assignment saved');
+      setError('');
+      await refreshAdminDemoOptions();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function handleUpdateAdminUserRole(user, communityRole) {
     try {
       await updateAdminUserRole(user.userId, communityRole);
@@ -963,10 +1075,11 @@ function App() {
     const title = String(draft.title || '').trim();
     const body = String(draft.body || '').trim();
     const mapId = draft.mapId ? Number.parseInt(draft.mapId, 10) : null;
+    const visibilityLevel = draft.visibilityLevel || 'campaign';
     if (!title || !body) return;
 
     try {
-      await createForumThread(campaign.id, { title, body, mapId });
+      await createForumThread(campaign.id, { title, body, mapId, visibilityLevel });
       setCampaignForumDraft((current) => ({ ...current, [campaign.id]: {} }));
       setMessage(`Created forum thread ${title}`);
       setError('');
@@ -987,6 +1100,24 @@ function App() {
       if (activeMap?.campaignId === campaign.id && centerTab === 'forums') {
         await refreshMapForumThreads();
       }
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleSetForumThreadVisibility(campaign, threadId, visibilityLevel, context = 'forum') {
+    if (!campaign?.id || !threadId || !visibilityLevel) return;
+    try {
+      const data = await setForumThreadVisibility(campaign.id, threadId, visibilityLevel);
+      if (context === 'map' && selectedForumThread?.id === data.thread.id) {
+        setSelectedForumThread(data.thread);
+        await refreshMapForumThreads();
+      } else if (forumPageThread?.id === data.thread.id) {
+        setForumPageThread(data.thread);
+      }
+      await refreshCampaignForumThreads(campaign.id);
+      setMessage(`Thread visibility set to ${formatForumThreadVisibility(data.thread.visibilityLevel)}`);
+      setError('');
     } catch (err) {
       showError(err);
     }
@@ -1051,7 +1182,8 @@ function App() {
       const data = await createForumThread(activeMap.campaignId, {
         title,
         body,
-        mapId: activeMap.id
+        mapId: activeMap.id,
+        visibilityLevel: 'campaign'
       });
       setMapForumDraft({ title: '', body: '' });
       setSelectedForumThread(data.thread);
@@ -1202,13 +1334,16 @@ function App() {
     }
   }
 
-  async function handleToggleMapVisibility() {
-    if (!activeMap?.id) return;
+  async function handleSetMapVisibility(map, visibilityLevel) {
+    if (!map?.id || !visibilityLevel) return;
     try {
-      const data = await setMapVisibility(activeMap.id, !activeMap.playerVisible);
-      activeMapRef.current = data.map;
-      setActiveMap(data.map);
-      setMessage(data.map.playerVisible ? 'Map is visible to campaign players' : 'Map is hidden from campaign players');
+      const data = await setMapVisibility(map.id, visibilityLevel);
+      if (activeMap?.id === data.map.id) {
+        activeMapRef.current = data.map;
+        setActiveMap(data.map);
+      }
+      await refreshCampaigns();
+      setMessage(`Map visibility set to ${formatMapVisibility(data.map.visibilityLevel)}`);
       setError('');
     } catch (err) {
       showError(err);
@@ -1247,8 +1382,10 @@ function App() {
       setActiveMap(data.map);
       setMessage(`Loaded ${groupName}/${mapName}`);
       setError('');
+      return data.map;
     } catch (err) {
       showError(err);
+      return null;
     }
   }
 
@@ -1578,7 +1715,7 @@ function App() {
     if (!targetMap) return;
 
     editQueueRef.current = editQueueRef.current
-      .catch(() => {})
+      .catch(() => { })
       .then(async () => {
         const currentMap = activeMapRef.current;
         const currentKey = currentMap ? `${currentMap.groupName}/${currentMap.mapName}` : '';
@@ -1687,7 +1824,7 @@ function App() {
     );
   }
 
-  if (!authUser) {
+  if (!authUser && !isDemoRoute) {
     return (
       <main className="auth-page">
         <section className="auth-card">
@@ -1741,15 +1878,20 @@ function App() {
   if (isAdminRoute) {
     return (
       <>
-        <AdminPage
-          authUser={authUser}
-          users={adminUsers}
-          message={message}
-          error={error}
-          onOpenAccount={handleOpenAccountModal}
-          onLogout={handleLogout}
-          onUpdateRole={handleUpdateAdminUserRole}
-        />
+      <AdminPage
+        authUser={authUser}
+        users={adminUsers}
+        demoAssignment={demoAssignment}
+        demoOptions={adminDemoOptions}
+        demoDraft={adminDemoDraft}
+        message={message}
+        error={error}
+        onOpenAccount={handleOpenAccountModal}
+        onLogout={handleLogout}
+        onDemoDraftChange={handleAdminDemoDraftChange}
+        onSaveDemoAssignment={handleSaveDemoAssignment}
+        onUpdateRole={handleUpdateAdminUserRole}
+      />
         {accountModals}
       </>
     );
@@ -1781,6 +1923,7 @@ function App() {
           }))}
           onCreateThread={() => campaign && handleCreateCampaignForumThread(campaign)}
           onAssignThread={(threadId, mapId) => campaign && handleAssignCampaignForumThread(campaign, threadId, mapId)}
+          onSetThreadVisibility={(threadId, visibilityLevel) => campaign && handleSetForumThreadVisibility(campaign, threadId, visibilityLevel)}
           onReplyDraftChange={setForumPageReplyDraft}
           onCreatePost={(event) => handleCreateCampaignForumPost(event, campaignId)}
           editingPost={editingPost}
@@ -1801,7 +1944,11 @@ function App() {
     );
   }
 
-  if (!mapRouteMatch) {
+  if (!mapRouteMatch && !isDemoRoute) {
+    const activeDashboardCampaign = dashboardModal
+      ? campaigns.find((campaign) => Number(campaign.id) === Number(dashboardModal.campaignId))
+      : null;
+
     return (
       <main className="dashboard-page">
         <SiteHeader
@@ -1830,197 +1977,72 @@ function App() {
                 <div className="campaign-card-header">
                   <div>
                     <h3>{campaign.name}</h3>
-                    <p>
-                      {campaign.role === 'owner' ? 'Owner' : 'Invited player'} · {campaign.mapCount} maps
-                      {campaign.unreadForumCount ? ` · ${campaign.unreadForumCount} unread forum posts` : ''}
-                    </p>
                   </div>
-                  <div className="button-row">
+                  <div className="button-row campaign-action-buttons">
+                    {campaign.role === 'owner' && (
+                      <button type="button" onClick={() => openDashboardModal('members', campaign)}>Manage Members</button>
+                    )}
+                    <button type="button" onClick={() => openDashboardModal('maps', campaign)}>List Maps</button>
+                    {campaign.role === 'owner' && (
+                      <button type="button" onClick={() => openDashboardModal('add-map', campaign)}>Add Map</button>
+                    )}
                     <a
                       className="button"
                       href={`/campaigns/${campaign.id}/forums`}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      Open forums
+                      Open Forums
                     </a>
-                    <button type="button" onClick={() => toggleCampaignCast(campaign.id)}>
-                      {dashboardCastCampaignId === campaign.id ? 'Hide cast' : 'The Cast'}
-                    </button>
-                    <button type="button" onClick={() => toggleCampaignForums(campaign.id)}>
-                      {dashboardForumCampaignId === campaign.id ? 'Hide preview' : 'Preview'}
-                    </button>
+                    <button type="button" onClick={() => openDashboardModal('cast', campaign)}>Manage the Cast</button>
+                    <button type="button" onClick={() => openDashboardModal('preview', campaign)}>Preview</button>
+                    {campaign.role === 'owner' && (
+                      <button type="button" onClick={() => openDashboardModal('permissions', campaign)}>Manage Permissions</button>
+                    )}
                   </div>
-                </div>
-
-                {campaign.role === 'owner' && (
-                  <div className="campaign-tools">
-                    <div className="inline-form">
-                      <input
-                        value={campaignMemberDraft[campaign.id] || ''}
-                        onChange={(event) => setCampaignMemberDraft((current) => ({ ...current, [campaign.id]: event.target.value }))}
-                        placeholder="Invite user id"
-                      />
-                      <button type="button" onClick={() => handleInviteCampaignMember(campaign.id)}>Invite</button>
-                    </div>
-                    <div className="inline-form campaign-map-form">
-                      <input
-                        value={campaignMapDraft[campaign.id]?.mapName || ''}
-                        onChange={(event) => setCampaignMapDraft((current) => ({
-                          ...current,
-                          [campaign.id]: { ...(current[campaign.id] || {}), mapName: event.target.value }
-                        }))}
-                        placeholder="New map name"
-                      />
-                      <label className="compact-field">
-                        <span>Width</span>
-                        <input
-                          value={campaignMapDraft[campaign.id]?.gridWidth || 40}
-                          onChange={(event) => setCampaignMapDraft((current) => ({
-                            ...current,
-                            [campaign.id]: { ...(current[campaign.id] || {}), gridWidth: event.target.value }
-                          }))}
-                          inputMode="numeric"
-                        />
-                      </label>
-                      <label className="compact-field">
-                        <span>Height</span>
-                        <input
-                          value={campaignMapDraft[campaign.id]?.gridHeight || 40}
-                          onChange={(event) => setCampaignMapDraft((current) => ({
-                            ...current,
-                            [campaign.id]: { ...(current[campaign.id] || {}), gridHeight: event.target.value }
-                          }))}
-                          inputMode="numeric"
-                        />
-                      </label>
-                      <button type="button" onClick={() => handleCreateCampaignMap(campaign.id)}>Create map</button>
-                    </div>
-                    <small>Members: {campaign.members.length ? campaign.members.join(', ') : 'No invited players yet'}</small>
-                  </div>
-                )}
-
-                {dashboardCastCampaignId === campaign.id && (
-                  <CampaignCastPanel
-                    campaign={campaign}
-                    cast={campaignCast[campaign.id] || []}
-                    drafts={campaignCastDraft}
-                    onDraftChange={updateCampaignCastDraft}
-                    onPortraitFile={handleCastPortraitFile}
-                    onCreate={() => handleCreateCampaignCast(campaign)}
-                    onSave={(entry) => handleUpdateCampaignCast(campaign.id, entry)}
-                    onDelete={(entry) => handleDeleteCampaignCast(campaign.id, entry)}
-                  />
-                )}
-
-                {dashboardForumCampaignId === campaign.id && (
-                  <section className="campaign-forum-panel">
-                    <div className="campaign-forum-header">
-                      <strong>Campaign Forums</strong>
-                      <small>Supports basic BBCode: [b], [i], [u], [quote], [code], [url]</small>
-                    </div>
-
-                    <div className="forum-thread-list compact">
-                      {(campaignForumThreads[campaign.id] || []).map((thread) => (
-                        <article className="forum-thread-row" key={thread.id}>
-                          <div>
-                            <strong>{thread.title}</strong>
-                            <small>
-                              {thread.postCount} posts · {thread.mapName ? `Map: ${thread.mapName}` : 'Campaign-wide'}
-                              {thread.hasUnread ? ` · ${thread.unreadCount} unread` : ''}
-                            </small>
-                            <ThreadAuthorMeta thread={thread} />
-                          </div>
-                          {campaign.role === 'owner' && (
-                            <select
-                              value={thread.mapId || ''}
-                              onChange={(event) => handleAssignCampaignForumThread(campaign, thread.id, event.target.value)}
-                              aria-label={`Assign ${thread.title} to a map`}
-                            >
-                              <option value="">Campaign-wide</option>
-                              {campaign.maps.map((map) => (
-                                <option key={map.id} value={map.id}>{map.name}</option>
-                              ))}
-                            </select>
-                          )}
-                        </article>
-                      ))}
-                      {!(campaignForumThreads[campaign.id] || []).length && <p>No forum threads yet.</p>}
-                    </div>
-
-                    <div className="forum-compose">
-                      <input
-                        value={campaignForumDraft[campaign.id]?.title || ''}
-                        onChange={(event) => setCampaignForumDraft((current) => ({
-                          ...current,
-                          [campaign.id]: { ...(current[campaign.id] || {}), title: event.target.value }
-                        }))}
-                        placeholder="Thread title"
-                      />
-                      <select
-                        value={campaignForumDraft[campaign.id]?.mapId || ''}
-                        onChange={(event) => setCampaignForumDraft((current) => ({
-                          ...current,
-                          [campaign.id]: { ...(current[campaign.id] || {}), mapId: event.target.value }
-                        }))}
-                        aria-label="Assign new thread to map"
-                      >
-                        <option value="">Campaign-wide thread</option>
-                        {campaign.maps.map((map) => (
-                          <option key={map.id} value={map.id}>{map.name}</option>
-                        ))}
-                      </select>
-                      <BBCodeEditor
-                        value={campaignForumDraft[campaign.id]?.body || ''}
-                        onChange={(value) => setCampaignForumDraft((current) => ({
-                          ...current,
-                          [campaign.id]: { ...(current[campaign.id] || {}), body: value }
-                        }))}
-                        postIdentities={campaignPostIdentities[campaign.id] || []}
-                        portraitRefreshKey={portraitRefreshKey}
-                        placeholder="First post with BBCode"
-                      />
-                      <button type="button" onClick={() => handleCreateCampaignForumThread(campaign)}>Create thread</button>
-                    </div>
-                  </section>
-                )}
-
-                <div className="dashboard-map-list">
-                  {campaign.maps.map((map) => {
-                    const threads = campaignForumThreads[campaign.id] || [];
-                    const assignedThread = threads.find((thread) => Number(thread.mapId) === Number(map.id));
-                    return (
-                      <div className="dashboard-map-row" key={map.id}>
-                        <a href={`/maps/${map.id}`} target="_blank" rel="noopener noreferrer">
-                          <span>{map.name}</span>
-                          <small>{map.playerVisible ? 'Visible to players' : map.invited ? 'Specifically invited' : 'Hidden'}</small>
-                        </a>
-                        {campaign.role === 'owner' && (
-                          <label className="map-thread-linker">
-                            <span>Forum thread</span>
-                            <select
-                              value={assignedThread?.id || ''}
-                              onChange={(event) => handleAssignMapForumThread(campaign, map, event.target.value)}
-                            >
-                              <option value="">No linked thread</option>
-                              {threads.map((thread) => (
-                                <option key={thread.id} value={thread.id}>
-                                  {thread.title}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {!campaign.maps.length && <p>No maps available.</p>}
                 </div>
               </article>
             ))}
             {!campaigns.length && <p className="empty-state">Create a campaign to get started.</p>}
           </section>
         </section>
+
+        {activeDashboardCampaign && (
+          <DashboardCampaignModal
+            type={dashboardModal.type}
+            campaign={activeDashboardCampaign}
+            cast={campaignCast[activeDashboardCampaign.id] || []}
+            castDrafts={campaignCastDraft}
+            memberDraft={campaignMemberDraft[activeDashboardCampaign.id] || ''}
+            mapDraft={campaignMapDraft[activeDashboardCampaign.id] || {}}
+            forumThreads={campaignForumThreads[activeDashboardCampaign.id] || []}
+            forumDraft={campaignForumDraft[activeDashboardCampaign.id] || {}}
+            postIdentities={campaignPostIdentities[activeDashboardCampaign.id] || []}
+            portraitRefreshKey={portraitRefreshKey}
+            onClose={() => setDashboardModal(null)}
+            onMemberDraftChange={(value) => setCampaignMemberDraft((current) => ({ ...current, [activeDashboardCampaign.id]: value }))}
+            onInviteMember={() => handleInviteCampaignMember(activeDashboardCampaign.id)}
+            onMapDraftChange={(patch) => setCampaignMapDraft((current) => ({
+              ...current,
+              [activeDashboardCampaign.id]: { ...(current[activeDashboardCampaign.id] || {}), ...patch }
+            }))}
+            onCreateMap={() => handleCreateCampaignMap(activeDashboardCampaign.id)}
+            onSetMapVisibility={(map, visibilityLevel) => handleSetMapVisibility(map, visibilityLevel)}
+            onAssignMapThread={(map, threadId) => handleAssignMapForumThread(activeDashboardCampaign, map, threadId)}
+            onForumDraftChange={(patch) => setCampaignForumDraft((current) => ({
+              ...current,
+              [activeDashboardCampaign.id]: { ...(current[activeDashboardCampaign.id] || {}), ...patch }
+            }))}
+            onCreateForumThread={() => handleCreateCampaignForumThread(activeDashboardCampaign)}
+            onAssignThread={(threadId, mapId) => handleAssignCampaignForumThread(activeDashboardCampaign, threadId, mapId)}
+            onSetThreadVisibility={(threadId, visibilityLevel) => handleSetForumThreadVisibility(activeDashboardCampaign, threadId, visibilityLevel)}
+            onCastDraftChange={updateCampaignCastDraft}
+            onCastPortraitFile={handleCastPortraitFile}
+            onCreateCast={() => handleCreateCampaignCast(activeDashboardCampaign)}
+            onSaveCast={(entry) => handleUpdateCampaignCast(activeDashboardCampaign.id, entry)}
+            onDeleteCast={(entry) => handleDeleteCampaignCast(activeDashboardCampaign.id, entry)}
+          />
+        )}
 
         {portraitCrop && (
           <PortraitCropModal
@@ -2134,7 +2156,7 @@ function App() {
           panels.right ? '' : 'right-panel-collapsed'
         ].filter(Boolean).join(' ')}
       >
-        <section className={`map-panel ${panels.top ? '' : 'top-panel-collapsed'}`}>
+        <section className={`map-panel ${centerTab === 'map' && !panels.top ? 'top-panel-collapsed' : ''}`}>
           <div className="center-tabs" role="tablist" aria-label="Center panel">
             <button
               type="button"
@@ -2153,7 +2175,7 @@ function App() {
               aria-selected={centerTab === 'forums'}
               disabled={!activeMap?.campaignId}
             >
-              Forums
+              Posts
             </button>
           </div>
 
@@ -2387,11 +2409,11 @@ function App() {
             {rightTab === 'tiles' ? (
               permissions.canEditTiles ? (
                 <TilePalette
-                tiles={layerTiles}
-                selectedTile={selectedTile}
-                onSelect={setSelectedTile}
-                layerLabel={EDITOR_LAYERS.find((layer) => layer.id === editorLayer)?.label}
-              />
+                  tiles={layerTiles}
+                  selectedTile={selectedTile}
+                  onSelect={setSelectedTile}
+                  layerLabel={EDITOR_LAYERS.find((layer) => layer.id === editorLayer)?.label}
+                />
               ) : (
                 <div className="empty-state compact">Map tiles are editable by the campaign owner.</div>
               )
@@ -2442,6 +2464,23 @@ function parseGridDimension(value, fallback = null) {
   const number = Number(trimmed);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(5, Math.min(99, Math.trunc(number)));
+}
+
+function formatMapVisibility(visibilityLevel) {
+  return MAP_VISIBILITY_LEVELS.find((level) => level.value === visibilityLevel)?.label || 'Hidden';
+}
+
+function formatForumThreadVisibility(visibilityLevel) {
+  return FORUM_THREAD_VISIBILITY_LEVELS.find((level) => level.value === visibilityLevel)?.label || 'Campaign';
+}
+
+function canPostInCampaignThread(thread, campaign, authUser) {
+  if (!thread || !authUser) return false;
+  if (thread.permissions?.canPost) return true;
+  const visibilityLevel = thread.visibilityLevel || 'campaign';
+  if (visibilityLevel === 'demo') return true;
+  if (campaign?.role === 'owner') return true;
+  return campaign?.role === 'member' && (visibilityLevel === 'public' || visibilityLevel === 'campaign');
 }
 
 function getCastDraftKey(campaignId, entryId) {
@@ -2803,6 +2842,322 @@ function ContactPage({
 
       <SiteFooter />
     </main>
+  );
+}
+
+function DashboardCampaignModal({
+  type,
+  campaign,
+  cast,
+  castDrafts,
+  memberDraft,
+  mapDraft,
+  forumThreads,
+  forumDraft,
+  postIdentities,
+  portraitRefreshKey,
+  onClose,
+  onMemberDraftChange,
+  onInviteMember,
+  onMapDraftChange,
+  onCreateMap,
+  onSetMapVisibility,
+  onAssignMapThread,
+  onForumDraftChange,
+  onCreateForumThread,
+  onAssignThread,
+  onSetThreadVisibility,
+  onCastDraftChange,
+  onCastPortraitFile,
+  onCreateCast,
+  onSaveCast,
+  onDeleteCast
+}) {
+  const title = {
+    members: 'Manage Members',
+    maps: 'List Maps',
+    'add-map': 'Add Map',
+    cast: 'Manage the Cast',
+    preview: 'Preview',
+    permissions: 'Manage Permissions'
+  }[type] || campaign.name;
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="confirm-modal dashboard-action-modal" role="dialog" aria-modal="true" aria-label={`${title}: ${campaign.name}`}>
+        <header>
+          <div>
+            <strong>{title}</strong>
+            <small>{campaign.name}</small>
+          </div>
+          <button type="button" onClick={onClose}>Close</button>
+        </header>
+
+        {type === 'members' && (
+          <div className="dashboard-modal-body">
+            {campaign.role === 'owner' ? (
+              <>
+                <div className="inline-form">
+                  <input
+                    value={memberDraft}
+                    onChange={(event) => onMemberDraftChange(event.target.value)}
+                    placeholder="Invite user id"
+                  />
+                  <button type="button" onClick={onInviteMember}>Invite</button>
+                </div>
+                <small>Members: {campaign.members.length ? campaign.members.join(', ') : 'No invited players yet'}</small>
+              </>
+            ) : (
+              <p>You are an invited player in this campaign.</p>
+            )}
+          </div>
+        )}
+
+        {type === 'maps' && (
+          <DashboardMapList
+            campaign={campaign}
+            forumThreads={forumThreads}
+            onSetMapVisibility={onSetMapVisibility}
+            onAssignMapThread={onAssignMapThread}
+            showPermissions={false}
+          />
+        )}
+
+        {type === 'add-map' && (
+          <div className="dashboard-modal-body">
+            <div className="inline-form campaign-map-form">
+              <input
+                value={mapDraft.mapName || ''}
+                onChange={(event) => onMapDraftChange({ mapName: event.target.value })}
+                placeholder="New map name"
+              />
+              <label className="compact-field">
+                <span>Width</span>
+                <input
+                  value={mapDraft.gridWidth || 40}
+                  onChange={(event) => onMapDraftChange({ gridWidth: event.target.value })}
+                  inputMode="numeric"
+                />
+              </label>
+              <label className="compact-field">
+                <span>Height</span>
+                <input
+                  value={mapDraft.gridHeight || 40}
+                  onChange={(event) => onMapDraftChange({ gridHeight: event.target.value })}
+                  inputMode="numeric"
+                />
+              </label>
+              <button type="button" onClick={onCreateMap}>Create map</button>
+            </div>
+          </div>
+        )}
+
+        {type === 'cast' && (
+          <CampaignCastPanel
+            campaign={campaign}
+            cast={cast}
+            drafts={castDrafts}
+            onDraftChange={onCastDraftChange}
+            onPortraitFile={onCastPortraitFile}
+            onCreate={onCreateCast}
+            onSave={onSaveCast}
+            onDelete={onDeleteCast}
+          />
+        )}
+
+        {type === 'preview' && (
+          <DashboardForumPreview
+            campaign={campaign}
+            forumThreads={forumThreads}
+            forumDraft={forumDraft}
+            postIdentities={postIdentities}
+            portraitRefreshKey={portraitRefreshKey}
+            onForumDraftChange={onForumDraftChange}
+            onCreateForumThread={onCreateForumThread}
+            onAssignThread={onAssignThread}
+            onSetThreadVisibility={onSetThreadVisibility}
+          />
+        )}
+
+        {type === 'permissions' && (
+          <div className="dashboard-modal-body dashboard-permissions-body">
+            <section>
+              <h4>Map Permissions</h4>
+              <DashboardMapList
+                campaign={campaign}
+                forumThreads={forumThreads}
+                onSetMapVisibility={onSetMapVisibility}
+                onAssignMapThread={onAssignMapThread}
+                showPermissions
+              />
+            </section>
+            <section>
+              <h4>Thread Permissions</h4>
+              <DashboardThreadPermissionList
+                campaign={campaign}
+                forumThreads={forumThreads}
+                onAssignThread={onAssignThread}
+                onSetThreadVisibility={onSetThreadVisibility}
+              />
+            </section>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function DashboardMapList({ campaign, forumThreads, onSetMapVisibility, onAssignMapThread, showPermissions }) {
+  return (
+    <div className={`dashboard-map-list dashboard-modal-body ${showPermissions ? 'permission-map-list' : ''}`}>
+      {campaign.maps.map((map) => {
+        const assignedThread = forumThreads.find((thread) => Number(thread.mapId) === Number(map.id));
+        return (
+          <div className="dashboard-map-row" key={map.id}>
+            {showPermissions ? (
+              <label className="map-thread-linker permission-map-name">
+                <span>Map Name</span>
+                <a href={`/maps/${map.id}`} target="_blank" rel="noopener noreferrer">
+                  <span>{map.name}</span>
+                </a>
+              </label>
+            ) : (
+              <a href={`/maps/${map.id}`} target="_blank" rel="noopener noreferrer">
+                <span>{map.name}</span>
+                <small>{formatMapVisibility(map.visibilityLevel)}</small>
+              </a>
+            )}
+            {campaign.role === 'owner' && showPermissions && (
+              <>
+                <label className="map-thread-linker">
+                  <span>Visibility</span>
+                  <select
+                    value={map.visibilityLevel || (map.playerVisible ? 'campaign' : 'hidden')}
+                    onChange={(event) => onSetMapVisibility(map, event.target.value)}
+                  >
+                    {MAP_VISIBILITY_LEVELS.map((level) => (
+                      <option key={level.value} value={level.value}>
+                        {level.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="map-thread-linker">
+                  <span>Forum thread</span>
+                  <select
+                    value={assignedThread?.id || ''}
+                    onChange={(event) => onAssignMapThread(map, event.target.value)}
+                  >
+                    <option value="">No linked thread</option>
+                    {forumThreads.map((thread) => (
+                      <option key={thread.id} value={thread.id}>
+                        {thread.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+          </div>
+        );
+      })}
+      {!campaign.maps.length && <p>No maps available.</p>}
+    </div>
+  );
+}
+
+function DashboardThreadPermissionList({ campaign, forumThreads, onSetThreadVisibility }) {
+  return (
+    <div className="forum-thread-list compact permission-thread-list">
+      {forumThreads.map((thread) => (
+        <article className="forum-thread-row" key={thread.id}>
+          <div>
+            <span className="forum-thread-row-title"><strong>{thread.title}</strong></span>
+            <small>
+              {thread.postCount} posts · {thread.mapName ? `Map: ${thread.mapName}` : 'Campaign-wide'}
+              {` · ${formatForumThreadVisibility(thread.visibilityLevel)}`}
+            </small>
+          </div>
+          {campaign.role === 'owner' && (
+            <select
+              value={thread.visibilityLevel || 'campaign'}
+              onChange={(event) => onSetThreadVisibility(thread.id, event.target.value)}
+              aria-label={`Set ${thread.title} visibility`}
+            >
+              {FORUM_THREAD_VISIBILITY_LEVELS.map((level) => (
+                <option key={level.value} value={level.value}>{level.label}</option>
+              ))}
+            </select>
+          )}
+        </article>
+      ))}
+      {!forumThreads.length && <p>No forum threads yet.</p>}
+    </div>
+  );
+}
+
+function DashboardForumPreview({
+  campaign,
+  forumThreads,
+  forumDraft,
+  postIdentities,
+  portraitRefreshKey,
+  onForumDraftChange,
+  onCreateForumThread,
+  onAssignThread,
+  onSetThreadVisibility
+}) {
+  return (
+    <section className="campaign-forum-panel">
+      <div className="campaign-forum-header">
+        <strong>Campaign Forums</strong>
+        <small>Supports basic BBCode: [b], [i], [u], [quote], [code], [url]</small>
+      </div>
+
+      <DashboardThreadPermissionList
+        campaign={campaign}
+        forumThreads={forumThreads}
+        onAssignThread={onAssignThread}
+        onSetThreadVisibility={onSetThreadVisibility}
+      />
+
+      <div className="forum-compose">
+        <input
+          value={forumDraft.title || ''}
+          onChange={(event) => onForumDraftChange({ title: event.target.value })}
+          placeholder="Thread title"
+        />
+        <select
+          value={forumDraft.mapId || ''}
+          onChange={(event) => onForumDraftChange({ mapId: event.target.value })}
+          aria-label="Assign new thread to map"
+        >
+          <option value="">Campaign-wide thread</option>
+          {campaign.maps.map((map) => (
+            <option key={map.id} value={map.id}>{map.name}</option>
+          ))}
+        </select>
+        {campaign.role === 'owner' && (
+          <select
+            value={forumDraft.visibilityLevel || 'campaign'}
+            onChange={(event) => onForumDraftChange({ visibilityLevel: event.target.value })}
+            aria-label="New thread visibility"
+          >
+            {FORUM_THREAD_VISIBILITY_LEVELS.map((level) => (
+              <option key={level.value} value={level.value}>{level.label}</option>
+            ))}
+          </select>
+        )}
+        <BBCodeEditor
+          value={forumDraft.body || ''}
+          onChange={(value) => onForumDraftChange({ body: value })}
+          postIdentities={postIdentities}
+          portraitRefreshKey={portraitRefreshKey}
+          placeholder="First post with BBCode"
+        />
+        <button type="button" onClick={onCreateForumThread}>Create thread</button>
+      </div>
+    </section>
   );
 }
 
@@ -3318,6 +3673,7 @@ function ForumPage({
   onThreadDraftChange,
   onCreateThread,
   onAssignThread,
+  onSetThreadVisibility,
   onReplyDraftChange,
   onCreatePost,
   editingPost,
@@ -3330,6 +3686,7 @@ function ForumPage({
   onToggleSubscription,
   onSendTestNotification
 }) {
+  const [newThreadModalOpen, setNewThreadModalOpen] = useState(false);
   const [threadPage, setThreadPage] = useState(1);
   const [threadPageSize, setThreadPageSize] = useState(10);
   const [postPage, setPostPage] = useState(1);
@@ -3337,6 +3694,7 @@ function ForumPage({
   const pagedThreads = paginateItems(threads, threadPage, threadPageSize);
   const posts = selectedThread?.posts || [];
   const pagedPosts = paginateItems(posts, postPage, postPageSize);
+  const canPostInSelectedThread = canPostInCampaignThread(selectedThread, campaign, authUser);
 
   useEffect(() => {
     setPostPage(initialThreadPostPage(selectedThread, postPageSize));
@@ -3345,6 +3703,12 @@ function ForumPage({
   useEffect(() => {
     window.requestAnimationFrame(() => scrollThreadToUnreadOrBottom(selectedThread));
   }, [selectedThread?.id, postPage, postPageSize, selectedThread?.posts?.length]);
+
+  function handleCreateThread(event) {
+    event.preventDefault();
+    onCreateThread();
+    setNewThreadModalOpen(false);
+  }
 
   return (
     <main className="forum-page">
@@ -3360,8 +3724,11 @@ function ForumPage({
       <section className="forum-page-layout">
         <aside className="forum-index-panel">
           <div className="forum-panel-header">
-            <strong>Threads</strong>
-            {campaign && <small>{campaign.role === 'owner' ? 'Owner' : 'Member'}</small>}
+            <div>
+              <strong>Threads</strong>
+              {campaign && <small>{campaign.role === 'owner' ? 'Owner' : 'Member'}</small>}
+            </div>
+            <button type="button" onClick={() => setNewThreadModalOpen(true)} disabled={!campaign}>New Thread</button>
           </div>
           <div className="forum-thread-list">
             {pagedThreads.items.map((thread) => (
@@ -3375,6 +3742,7 @@ function ForumPage({
                 <small>
                   {thread.postCount} posts
                   {thread.mapName ? ` · ${thread.mapName}` : ''}
+                  {` · ${formatForumThreadVisibility(thread.visibilityLevel)}`}
                 </small>
                 <ThreadAuthorMeta thread={thread} />
                 {thread.hasUnread && <strong className="unread-pill">{thread.unreadCount} unread</strong>}
@@ -3396,9 +3764,7 @@ function ForumPage({
         </aside>
 
         <section className="forum-main-panel">
-          {!campaign ? (
-            <div className="empty-state">Loading campaign forum...</div>
-          ) : selectedThread ? (
+          {selectedThread ? (
             <>
               <header className="forum-thread-header">
                 <div>
@@ -3409,26 +3775,37 @@ function ForumPage({
                   </p>
                 </div>
                 <div className="button-row">
-                  <button type="button" onClick={() => onToggleSubscription(selectedThread)}>
+                  <button type="button" onClick={() => onToggleSubscription(selectedThread)} disabled={!authUser}>
                     {selectedThread.subscribed ? 'Unsubscribe' : 'Subscribe'}
                   </button>
-                  <button type="button" onClick={() => onSendTestNotification(selectedThread.id)}>
+                  <button type="button" onClick={() => onSendTestNotification(selectedThread.id)} disabled={!authUser}>
                     Test notification
                   </button>
-                  <button type="button" onClick={() => onMarkThreadRead(selectedThread.id)} disabled={!selectedThread.posts.length}>
+                  <button type="button" onClick={() => onMarkThreadRead(selectedThread.id)} disabled={!authUser || !selectedThread.posts.length}>
                     Mark all read
                   </button>
-                  {campaign.role === 'owner' && (
-                    <select
-                      value={selectedThread.mapId || ''}
-                      onChange={(event) => onAssignThread(selectedThread.id, event.target.value)}
-                      aria-label="Assign thread to map"
-                    >
-                      <option value="">Campaign-wide</option>
-                      {campaign.maps.map((map) => (
-                        <option key={map.id} value={map.id}>{map.name}</option>
-                      ))}
-                    </select>
+                  {campaign?.role === 'owner' && (
+                    <>
+                      <select
+                        value={selectedThread.visibilityLevel || 'campaign'}
+                        onChange={(event) => onSetThreadVisibility(selectedThread.id, event.target.value)}
+                        aria-label="Thread visibility"
+                      >
+                        {FORUM_THREAD_VISIBILITY_LEVELS.map((level) => (
+                          <option key={level.value} value={level.value}>{level.label}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={selectedThread.mapId || ''}
+                        onChange={(event) => onAssignThread(selectedThread.id, event.target.value)}
+                        aria-label="Assign thread to map"
+                      >
+                        <option value="">Campaign-wide</option>
+                        {(campaign?.maps || []).map((map) => (
+                          <option key={map.id} value={map.id}>{map.name}</option>
+                        ))}
+                      </select>
+                    </>
                   )}
                 </div>
               </header>
@@ -3439,7 +3816,8 @@ function ForumPage({
                     post={post}
                     threadId={selectedThread.id}
                     viewerUserId={authUser?.id}
-                    canDelete={campaign.role === 'owner' || post.authorUserId === authUser?.id}
+                    canEdit={post.canEdit}
+                    canDelete={post.canDelete}
                     portraitRefreshKey={portraitRefreshKey}
                     editingPost={editingPost}
                     onStartEditPost={onStartEditPost}
@@ -3449,73 +3827,94 @@ function ForumPage({
                     onDeletePost={onDeletePost}
                   />
                 ))}
+                <footer className="forum-post-list-footer">
+                  <PaginationControls
+                    label="Posts"
+                    totalItems={posts.length}
+                    page={pagedPosts.currentPage}
+                    pageSize={postPageSize}
+                    onPageChange={setPostPage}
+                    onPageSizeChange={(size) => {
+                      setPostPageSize(size);
+                      setPostPage(1);
+                    }}
+                  />
+                  {canPostInSelectedThread ? (
+                    <form className="forum-reply-form" onSubmit={onCreatePost}>
+                      <BBCodeEditor
+                        value={replyDraft}
+                        onChange={onReplyDraftChange}
+                        postIdentities={postIdentities}
+                        portraitRefreshKey={portraitRefreshKey}
+                        placeholder="Reply with BBCode"
+                      />
+                      <button type="submit">Post reply</button>
+                    </form>
+                  ) : (
+                    <div className="forum-reply-form">You can read this thread, but you cannot post here.</div>
+                  )}
+                </footer>
               </div>
-              <PaginationControls
-                label="Posts"
-                totalItems={posts.length}
-                page={pagedPosts.currentPage}
-                pageSize={postPageSize}
-                onPageChange={setPostPage}
-                onPageSizeChange={(size) => {
-                  setPostPageSize(size);
-                  setPostPage(1);
-                }}
-              />
-              <form className="forum-reply-form" onSubmit={onCreatePost}>
-                <BBCodeEditor
-                  value={replyDraft}
-                  onChange={onReplyDraftChange}
-                  postIdentities={postIdentities}
-                  portraitRefreshKey={portraitRefreshKey}
-                  placeholder="Reply with BBCode"
-                />
-                <button type="submit">Post reply</button>
-              </form>
             </>
           ) : (
             <div className="empty-state">Select a thread to read it.</div>
           )}
         </section>
-
-        <aside className="forum-compose-panel">
-          <div className="forum-panel-header">
-            <strong>New Thread</strong>
-            <small>BBCode enabled</small>
-          </div>
-          <form
-            className="forum-compose"
-            onSubmit={(event) => {
-              event.preventDefault();
-              onCreateThread();
-            }}
-          >
-            <input
-              value={threadDraft.title || ''}
-              onChange={(event) => onThreadDraftChange((current) => ({ ...current, title: event.target.value }))}
-              placeholder="Thread title"
-            />
-            <select
-              value={threadDraft.mapId || ''}
-              onChange={(event) => onThreadDraftChange((current) => ({ ...current, mapId: event.target.value }))}
-              disabled={!campaign}
-              aria-label="Assign new thread to map"
-            >
-              <option value="">Campaign-wide thread</option>
-              {(campaign?.maps || []).map((map) => (
-                <option key={map.id} value={map.id}>{map.name}</option>
-              ))}
-            </select>
-            <BBCodeEditor
-              value={threadDraft.body || ''}
-              onChange={(value) => onThreadDraftChange((current) => ({ ...current, body: value }))}
-              postIdentities={postIdentities}
-              portraitRefreshKey={portraitRefreshKey}
-              placeholder="First post"
-            />
-            <button type="submit" disabled={!campaign}>Create thread</button>
-          </form>
-        </aside>
       </section>
+
+      {newThreadModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal forum-thread-modal" role="dialog" aria-modal="true" aria-label="New campaign thread">
+            <header>
+              <div>
+                <strong>New Thread</strong>
+                <small>BBCode enabled</small>
+              </div>
+              <button type="button" onClick={() => setNewThreadModalOpen(false)}>Cancel</button>
+            </header>
+            <form className="forum-compose" onSubmit={handleCreateThread}>
+              <input
+                value={threadDraft.title || ''}
+                onChange={(event) => onThreadDraftChange((current) => ({ ...current, title: event.target.value }))}
+                placeholder="Thread title"
+              />
+              <select
+                value={threadDraft.mapId || ''}
+                onChange={(event) => onThreadDraftChange((current) => ({ ...current, mapId: event.target.value }))}
+                disabled={!campaign}
+                aria-label="Assign new thread to map"
+              >
+                <option value="">Campaign-wide thread</option>
+                {(campaign?.maps || []).map((map) => (
+                  <option key={map.id} value={map.id}>{map.name}</option>
+                ))}
+              </select>
+              {campaign?.role === 'owner' && (
+                <select
+                  value={threadDraft.visibilityLevel || 'campaign'}
+                  onChange={(event) => onThreadDraftChange((current) => ({ ...current, visibilityLevel: event.target.value }))}
+                  aria-label="New thread visibility"
+                >
+                  {FORUM_THREAD_VISIBILITY_LEVELS.map((level) => (
+                    <option key={level.value} value={level.value}>{level.label}</option>
+                  ))}
+                </select>
+              )}
+              <BBCodeEditor
+                value={threadDraft.body || ''}
+                onChange={(value) => onThreadDraftChange((current) => ({ ...current, body: value }))}
+                postIdentities={postIdentities}
+                portraitRefreshKey={portraitRefreshKey}
+                placeholder="First post"
+              />
+              <div className="button-row">
+                <button type="submit" disabled={!campaign}>Create thread</button>
+                <button type="button" onClick={() => setNewThreadModalOpen(false)}>Cancel</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
 
       {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
       <SiteFooter />
@@ -3550,18 +3949,18 @@ function SiteHeader({
       </a>
       <nav className="main-nav" aria-label="Site pages">
         <a href="/">Home</a>
-        <a href="/forums">Forums</a>
-        {authUser && <a href="/dashboard">Dashboard</a>}
-        <a href="/contact">Contact</a>
+        <a href="/forums">Community Forums</a>
+        {authUser && <a href="/dashboard">Campaign Dashboard</a>}
+        <a href="/demo">Demo</a>
         {authUser?.communityRole === 'admin' && <a href="/admin">Admin</a>}
-        {actions}
         {authUser && <button type="button" className="nav-button" onClick={onOpenAccount}>Account</button>}
         {authUser ? (
-          <button type="button" className="nav-button" onClick={onLogout}>Sign out</button>
+          <button type="button" className="nav-button" onClick={onLogout}>Sign Out</button>
         ) : (
-          <a className="nav-button" href="/auth">Sign in</a>
+          <a className="nav-button" href="/auth">Sign In / Register</a>
         )}
       </nav>
+      {actions && <div className="site-header-actions">{actions}</div>}
     </header>
   );
 }
@@ -3690,16 +4089,35 @@ function formatCommunityRole(role) {
   return 'Community Member';
 }
 
+function buildDemoAssignmentDraft(assignment = null) {
+  return {
+    campaignId: assignment?.campaignId ? String(assignment.campaignId) : '',
+    mapId: assignment?.mapId ? String(assignment.mapId) : '',
+    threadId: assignment?.threadId ? String(assignment.threadId) : ''
+  };
+}
+
 function AdminPage({
   authUser,
   users,
+  demoAssignment,
+  demoOptions,
+  demoDraft,
   message,
   error,
   onOpenAccount,
   onLogout,
+  onDemoDraftChange,
+  onSaveDemoAssignment,
   onUpdateRole
 }) {
   const isAdmin = authUser?.communityRole === 'admin';
+  const campaignMaps = demoOptions.maps.filter((map) => String(map.campaignId) === String(demoDraft.campaignId));
+  const campaignThreads = demoOptions.threads.filter((thread) => {
+    if (String(thread.campaignId) !== String(demoDraft.campaignId)) return false;
+    if (!demoDraft.mapId) return false;
+    return String(thread.mapId) === String(demoDraft.mapId);
+  });
   return (
     <main className="admin-page">
       <SiteHeader
@@ -3721,29 +4139,86 @@ function AdminPage({
         {!isAdmin ? (
           <div className="empty-state">Admin access is required.</div>
         ) : (
-          <div className="admin-user-list">
-            {users.map((user) => (
-              <article className="admin-user-row" key={user.userId}>
-                <div>
-                  <strong>{user.displayName || user.email}</strong>
-                  <small>{user.email}</small>
-                  <small>{formatCount(user.postsMade, 'post')}</small>
-                </div>
+          <>
+            <form className="admin-demo-card" onSubmit={onSaveDemoAssignment}>
+              <div>
+                <h2>Demo Link</h2>
+                <p>Choose the campaign, map, and forum thread opened from the Demo header link.</p>
+                {demoAssignment?.campaignName && (
+                  <small>
+                    Current: {demoAssignment.campaignName}
+                    {demoAssignment.mapName ? ` / ${demoAssignment.mapName}` : ''}
+                    {demoAssignment.threadTitle ? ` / ${demoAssignment.threadTitle}` : ''}
+                  </small>
+                )}
+              </div>
+              <div className="admin-demo-grid">
                 <label>
-                  <span>Rank</span>
+                  <span>Campaign</span>
                   <select
-                    value={user.communityRole}
-                    onChange={(event) => onUpdateRole(user, event.target.value)}
+                    value={demoDraft.campaignId}
+                    onChange={(event) => onDemoDraftChange('campaignId', event.target.value)}
                   >
-                    <option value="admin">Admin</option>
-                    <option value="moderator">Moderator</option>
-                    <option value="community_member">Community Member</option>
+                    <option value="">Use fallback demo map</option>
+                    {demoOptions.campaigns.map((campaign) => (
+                      <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
+                    ))}
                   </select>
                 </label>
-              </article>
-            ))}
-            {!users.length && <div className="empty-state">No users found.</div>}
-          </div>
+                <label>
+                  <span>Map</span>
+                  <select
+                    value={demoDraft.mapId}
+                    onChange={(event) => onDemoDraftChange('mapId', event.target.value)}
+                    disabled={!demoDraft.campaignId}
+                  >
+                    <option value="">No campaign map</option>
+                    {campaignMaps.map((map) => (
+                      <option key={map.id} value={map.id}>{map.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Forum Thread</span>
+                  <select
+                    value={demoDraft.threadId}
+                    onChange={(event) => onDemoDraftChange('threadId', event.target.value)}
+                    disabled={!demoDraft.mapId}
+                  >
+                    <option value="">No forum thread</option>
+                    {campaignThreads.map((thread) => (
+                      <option key={thread.id} value={thread.id}>{thread.title}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <button type="submit">Save Demo Link</button>
+            </form>
+
+            <div className="admin-user-list">
+              {users.map((user) => (
+                <article className="admin-user-row" key={user.userId}>
+                  <div>
+                    <strong>{user.displayName || user.email}</strong>
+                    <small>{user.email}</small>
+                    <small>{formatCount(user.postsMade, 'post')}</small>
+                  </div>
+                  <label>
+                    <span>Rank</span>
+                    <select
+                      value={user.communityRole}
+                      onChange={(event) => onUpdateRole(user, event.target.value)}
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="moderator">Moderator</option>
+                      <option value="community_member">Community Member</option>
+                    </select>
+                  </label>
+                </article>
+              ))}
+              {!users.length && <div className="empty-state">No users found.</div>}
+            </div>
+          </>
         )}
       </section>
 
@@ -4199,13 +4674,13 @@ function MapForumPanel({
                 </p>
               </div>
               <div className="button-row">
-                <button type="button" onClick={() => onToggleSubscription(selectedThread)}>
+                <button type="button" onClick={() => onToggleSubscription(selectedThread)} disabled={!viewerUserId}>
                   {selectedThread.subscribed ? 'Unsubscribe' : 'Subscribe'}
                 </button>
-                <button type="button" onClick={() => onSendTestNotification(selectedThread.id)}>
+                <button type="button" onClick={() => onSendTestNotification(selectedThread.id)} disabled={!viewerUserId}>
                   Test notification
                 </button>
-                <button type="button" onClick={() => onMarkThreadRead(selectedThread.id)} disabled={!selectedThread.posts.length}>
+                <button type="button" onClick={() => onMarkThreadRead(selectedThread.id)} disabled={!viewerUserId || !selectedThread.posts.length}>
                   Mark all read
                 </button>
               </div>
@@ -4218,7 +4693,8 @@ function MapForumPanel({
                   threadId={selectedThread.id}
                   viewerUserId={viewerUserId}
                   compact
-                  canDelete={post.authorUserId === viewerUserId}
+                  canEdit={post.canEdit}
+                  canDelete={post.canDelete}
                   portraitRefreshKey={portraitRefreshKey}
                   editingPost={editingPost}
                   onStartEditPost={onStartEditPost}
@@ -4241,7 +4717,9 @@ function MapForumPanel({
               }}
             />
             <footer className="forum-reply-actions">
-              <button type="button" onClick={() => setReplyModalOpen(true)}>New post</button>
+              <button type="button" onClick={() => setReplyModalOpen(true)} disabled={!selectedThread.permissions?.canPost}>
+                New post
+              </button>
             </footer>
           </>
         ) : (
@@ -4251,7 +4729,7 @@ function MapForumPanel({
         )}
       </section>
 
-      {replyModalOpen && selectedThread && (
+      {replyModalOpen && selectedThread?.permissions?.canPost && (
         <div className="modal-backdrop" role="presentation">
           <section className="confirm-modal map-forum-post-modal" role="dialog" aria-modal="true" aria-label={`New post in ${selectedThread.title}`}>
             <header>
