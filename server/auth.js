@@ -6,6 +6,20 @@ import { config } from './env.js';
 
 const scrypt = promisify(crypto.scrypt);
 const PASSWORD_KEY_LENGTH = 64;
+const USER_PROFILE_COLUMNS = `
+  users.id,
+  users.email,
+  users.display_name,
+  users.profile_about,
+  users.profile_pronouns,
+  users.profile_timezone,
+  users.profile_image_url,
+  users.use_gravatar,
+  users.auto_subscribe_forum_threads,
+  users.community_role,
+  users.email_verified_at,
+  users.updated_at
+`;
 
 export async function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -48,10 +62,7 @@ export async function loadUserFromToken(token) {
   if (!token) return null;
   const rows = await query(
     `SELECT
-       users.id,
-       users.email,
-       users.display_name,
-       users.email_verified_at
+       ${USER_PROFILE_COLUMNS}
      FROM user_sessions
      INNER JOIN users ON users.id = user_sessions.user_id
      WHERE user_sessions.token_hash = ?
@@ -150,10 +161,30 @@ export async function verifyRecaptcha(token, remoteIp, expectedAction = config.a
 }
 
 export function publicUser(user) {
+  const profileUpdatedAt = user.updated_at || user.updatedAt || '';
+  const gravatarUrl = gravatarAvatarUrl(user.email, profileUpdatedAt);
   return {
     id: userPublicId(user),
     email: user.email,
     displayName: user.display_name,
+    profileAbout: user.profile_about || '',
+    profilePronouns: user.profile_pronouns || '',
+    profileTimezone: user.profile_timezone || '',
+    profileImageUrl: user.profile_image_url || '',
+    useGravatar: Boolean(user.use_gravatar),
+    gravatarUrl,
+    avatarUrl: user.use_gravatar ? gravatarUrl : (user.profile_image_url || ''),
+    autoSubscribeForumThreads: Boolean(user.auto_subscribe_forum_threads),
+    communityRole: user.community_role || 'community_member',
+    stats: user.stats || {
+      postsMade: 0,
+      threadsStarted: 0,
+      diceRollsMade: 0,
+      campaignsOwned: 0,
+      campaignsJoined: 0,
+      subscribedThreads: 0
+    },
+    profileUpdatedAt,
     emailVerified: Boolean(user.email_verified_at)
   };
 }
@@ -185,4 +216,10 @@ function escapeHtml(value) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
+}
+
+function gravatarAvatarUrl(email, version = '') {
+  const hash = crypto.createHash('md5').update(String(email || '').trim().toLowerCase()).digest('hex');
+  const versionParam = version ? `&v=${encodeURIComponent(new Date(version).getTime() || String(version))}` : '';
+  return `https://www.gravatar.com/avatar/${hash}?s=256&d=identicon${versionParam}`;
 }

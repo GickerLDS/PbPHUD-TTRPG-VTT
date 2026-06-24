@@ -93,6 +93,50 @@ export async function getForumThread(campaignId, threadId) {
   return parseResponse(response);
 }
 
+export async function markForumThreadRead(campaignId, threadId) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/read`,
+    {
+      method: 'POST',
+      headers: viewerHeaders()
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function subscribeForumThread(campaignId, threadId) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/subscription`,
+    {
+      method: 'POST',
+      headers: viewerHeaders()
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function unsubscribeForumThread(campaignId, threadId) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/subscription`,
+    {
+      method: 'DELETE',
+      headers: viewerHeaders()
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function sendForumThreadTestNotification(campaignId, threadId) {
+  const response = await fetch(
+    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/test-notification`,
+    {
+      method: 'POST',
+      headers: viewerHeaders()
+    }
+  );
+  return parseResponse(response);
+}
+
 export async function listForumPostIdentities(campaignId) {
   const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/post-identities`, {
     headers: viewerHeaders()
@@ -147,6 +191,93 @@ export async function assignForumThreadMap(campaignId, threadId, mapId) {
   return parseResponse(response);
 }
 
+export async function listPublicForumSections() {
+  const response = await fetch('/api/public-forums/sections', {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function listPublicForumThreads(sectionSlug) {
+  const response = await fetch(`/api/public-forums/sections/${encodeURIComponent(sectionSlug)}/threads`, {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function createPublicForumThread(sectionSlug, payload) {
+  const response = await fetch(`/api/public-forums/sections/${encodeURIComponent(sectionSlug)}/threads`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function getPublicForumThread(threadId) {
+  const response = await fetch(`/api/public-forums/threads/${encodeURIComponent(threadId)}`, {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function createPublicForumPost(threadId, body) {
+  const response = await fetch(`/api/public-forums/threads/${encodeURIComponent(threadId)}/posts`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ body })
+  });
+  return parseResponse(response);
+}
+
+export async function updatePublicForumPost(threadId, postId, body) {
+  const response = await fetch(
+    `/api/public-forums/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`,
+    {
+      method: 'PATCH',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ body })
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function deletePublicForumPost(threadId, postId) {
+  const response = await fetch(
+    `/api/public-forums/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`,
+    {
+      method: 'DELETE',
+      headers: viewerHeaders()
+    }
+  );
+  return parseResponse(response);
+}
+
+export async function setPublicForumThreadSticky(threadId, sticky) {
+  const response = await fetch(`/api/public-forums/threads/${encodeURIComponent(threadId)}/sticky`, {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ sticky })
+  });
+  return parseResponse(response);
+}
+
+export async function listAdminUsers() {
+  const response = await fetch('/api/admin/users', {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function updateAdminUserRole(userId, communityRole) {
+  const response = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ communityRole })
+  });
+  return parseResponse(response);
+}
+
 export async function sendContactMessage(payload) {
   const response = await fetch('/api/contact', {
     method: 'POST',
@@ -163,6 +294,15 @@ export async function getAuthConfig() {
 
 export async function getCurrentUser() {
   const response = await fetch('/api/auth/me', { headers: authHeaders() });
+  return parseResponse(response);
+}
+
+export async function updateAccountProfile(payload) {
+  const response = await fetch('/api/auth/profile', {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
   return parseResponse(response);
 }
 

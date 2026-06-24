@@ -11,9 +11,11 @@ import {
   publicUser,
   sendVerificationEmail,
   tokenHash,
+  userPublicId,
   verifyPassword,
   verifyRecaptcha
 } from '../auth.js';
+import { subscribeUserToAccessibleForumThreads } from '../forumSubscriptions.js';
 import { validate } from '../validation.js';
 
 export const authRouter = express.Router();
@@ -41,6 +43,16 @@ const verifyEmailSchema = z.object({
   token: z.string().min(20).max(200)
 });
 
+const profileSchema = z.object({
+  displayName: z.string().trim().min(1).max(120),
+  profileAbout: z.string().trim().max(4000).optional().default(''),
+  profilePronouns: z.string().trim().max(80).optional().default(''),
+  profileTimezone: z.string().trim().max(80).optional().default(''),
+  profileImageUrl: z.string().trim().max(900000).optional().default(''),
+  useGravatar: z.boolean().optional().default(false),
+  autoSubscribeForumThreads: z.boolean().optional().default(false)
+});
+
 authRouter.get('/config', (_req, res) => {
   res.json({
     recaptchaSiteKey: config.auth.recaptchaSiteKey,
@@ -51,8 +63,73 @@ authRouter.get('/config', (_req, res) => {
   });
 });
 
-authRouter.get('/me', (req, res) => {
-  res.json({ user: req.user ? publicUser(req.user) : null });
+authRouter.get('/me', async (req, res, next) => {
+  try {
+    res.json({ user: req.user ? publicUser(await withAccountStats(req.user)) : null });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRouter.patch('/profile', async (req, res, next) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
+
+    const body = validate(profileSchema, req.body);
+    await query(
+      `UPDATE users
+       SET
+         display_name = ?,
+         profile_about = ?,
+         profile_pronouns = ?,
+         profile_timezone = ?,
+         profile_image_url = ?,
+         use_gravatar = ?,
+         auto_subscribe_forum_threads = ?
+       WHERE id = ?`,
+      [
+        body.displayName,
+        body.profileAbout,
+        body.profilePronouns,
+        body.profileTimezone,
+        body.profileImageUrl,
+        body.useGravatar,
+        body.autoSubscribeForumThreads,
+        req.user.id
+      ]
+    );
+
+    const rows = await query(
+      `SELECT
+         id,
+         email,
+         display_name,
+         profile_about,
+         profile_pronouns,
+         profile_timezone,
+         profile_image_url,
+         use_gravatar,
+         auto_subscribe_forum_threads,
+         community_role,
+         email_verified_at,
+         updated_at
+       FROM users
+       WHERE id = ?
+       LIMIT 1`,
+      [req.user.id]
+    );
+    const user = rows[0];
+    if (body.autoSubscribeForumThreads) {
+      await subscribeUserToAccessibleForumThreads(userPublicId(user));
+    }
+
+    res.json({ user: publicUser(await withAccountStats(user)) });
+  } catch (error) {
+    next(error);
+  }
 });
 
 authRouter.post('/register', async (req, res, next) => {
@@ -73,6 +150,7 @@ authRouter.post('/register', async (req, res, next) => {
       id: Number(result.insertId),
       email: body.email,
       display_name: body.displayName,
+      community_role: 'community_member',
       email_verified_at: null
     };
     const verification = await createEmailVerification(user.id);
@@ -98,7 +176,23 @@ authRouter.post('/login', async (req, res, next) => {
   try {
     const body = validate(loginSchema, req.body);
     const rows = await query(
-      `SELECT id, email, display_name, password_hash, email_verified_at FROM users WHERE email = ? LIMIT 1`,
+      `SELECT
+         id,
+         email,
+         display_name,
+         password_hash,
+         profile_about,
+         profile_pronouns,
+         profile_timezone,
+         profile_image_url,
+         use_gravatar,
+         auto_subscribe_forum_threads,
+         community_role,
+         email_verified_at,
+         updated_at
+       FROM users
+       WHERE email = ?
+       LIMIT 1`,
       [body.email]
     );
     const user = rows[0];
@@ -112,7 +206,7 @@ authRouter.post('/login', async (req, res, next) => {
     }
 
     const session = await createSession(user.id);
-    res.json({ user: publicUser(user), token: session.token, expiresAt: session.expiresAt });
+    res.json({ user: publicUser(await withAccountStats(user)), token: session.token, expiresAt: session.expiresAt });
   } catch (error) {
     next(error);
   }
@@ -198,8 +292,62 @@ authRouter.post('/verify-email', async (req, res, next) => {
     }
 
     const session = await createSession(result.id);
-    res.json({ user: publicUser(result), token: session.token, expiresAt: session.expiresAt });
+    res.json({ user: publicUser(await withAccountStats(result)), token: session.token, expiresAt: session.expiresAt });
   } catch (error) {
     next(error);
   }
 });
+
+async function withAccountStats(user) {
+  if (!user?.id) return user;
+  const userId = userPublicId(user);
+  const [
+    postRows,
+    threadRows,
+    rollRows,
+    ownedRows,
+    memberRows,
+    subscriptionRows
+  ] = await Promise.all([
+    query(
+      `SELECT SUM(count) AS count
+       FROM (
+         SELECT COUNT(*) AS count FROM campaign_forum_posts WHERE author_user_id = ?
+         UNION ALL
+         SELECT COUNT(*) AS count FROM public_forum_posts WHERE author_user_id = ?
+       ) counts`,
+      [userId, userId]
+    ),
+    query(
+      `SELECT SUM(count) AS count
+       FROM (
+         SELECT COUNT(*) AS count FROM campaign_forum_threads WHERE created_by_user_id = ?
+         UNION ALL
+         SELECT COUNT(*) AS count FROM public_forum_threads WHERE created_by_user_id = ?
+       ) counts`,
+      [userId, userId]
+    ),
+    query(
+      `SELECT COUNT(rolls.id) AS count
+       FROM campaign_forum_post_rolls rolls
+       INNER JOIN campaign_forum_posts posts ON posts.id = rolls.post_id
+       WHERE posts.author_user_id = ?`,
+      [userId]
+    ),
+    query(`SELECT COUNT(*) AS count FROM campaigns WHERE owner_user_id = ?`, [userId]),
+    query(`SELECT COUNT(*) AS count FROM campaign_members WHERE user_id = ?`, [userId]),
+    query(`SELECT COUNT(*) AS count FROM campaign_forum_thread_subscriptions WHERE user_id = ?`, [userId])
+  ]);
+
+  return {
+    ...user,
+    stats: {
+      postsMade: Number(postRows[0]?.count || 0),
+      threadsStarted: Number(threadRows[0]?.count || 0),
+      diceRollsMade: Number(rollRows[0]?.count || 0),
+      campaignsOwned: Number(ownedRows[0]?.count || 0),
+      campaignsJoined: Number(memberRows[0]?.count || 0),
+      subscribedThreads: Number(subscriptionRows[0]?.count || 0)
+    }
+  };
+}

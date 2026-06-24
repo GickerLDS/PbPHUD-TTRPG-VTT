@@ -185,6 +185,59 @@ CREATE TABLE IF NOT EXISTS campaign_forum_post_rolls (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS campaign_forum_thread_reads (
+  thread_id BIGINT UNSIGNED NOT NULL,
+  user_id VARCHAR(191) NOT NULL,
+  last_read_post_id BIGINT UNSIGNED NULL,
+  read_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (thread_id, user_id),
+  KEY idx_campaign_forum_thread_reads_user (user_id),
+  CONSTRAINT fk_campaign_forum_thread_reads_thread
+    FOREIGN KEY (thread_id) REFERENCES campaign_forum_threads (id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_campaign_forum_thread_reads_post
+    FOREIGN KEY (last_read_post_id) REFERENCES campaign_forum_posts (id)
+    ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS campaign_forum_thread_subscriptions (
+  thread_id BIGINT UNSIGNED NOT NULL,
+  user_id VARCHAR(191) NOT NULL,
+  notify_pending BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (thread_id, user_id),
+  KEY idx_campaign_forum_thread_subscriptions_user (user_id),
+  CONSTRAINT fk_campaign_forum_thread_subscriptions_thread
+    FOREIGN KEY (thread_id) REFERENCES campaign_forum_threads (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE campaign_forum_thread_subscriptions ADD COLUMN IF NOT EXISTS notify_pending BOOLEAN NOT NULL DEFAULT FALSE AFTER user_id;
+
+CREATE TABLE IF NOT EXISTS campaign_forum_notification_queue (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  thread_id BIGINT UNSIGNED NOT NULL,
+  user_id VARCHAR(191) NOT NULL,
+  first_post_id BIGINT UNSIGNED NOT NULL,
+  latest_post_id BIGINT UNSIGNED NOT NULL,
+  post_count INT UNSIGNED NOT NULL DEFAULT 1,
+  queued_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_campaign_forum_notification_queue_thread_user (thread_id, user_id),
+  KEY idx_campaign_forum_notification_queue_user (user_id),
+  CONSTRAINT fk_campaign_forum_notification_queue_thread
+    FOREIGN KEY (thread_id) REFERENCES campaign_forum_threads (id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_campaign_forum_notification_queue_first_post
+    FOREIGN KEY (first_post_id) REFERENCES campaign_forum_posts (id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_campaign_forum_notification_queue_latest_post
+    FOREIGN KEY (latest_post_id) REFERENCES campaign_forum_posts (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS map_shares (
   map_id BIGINT UNSIGNED NOT NULL,
   user_id VARCHAR(191) NOT NULL,
@@ -240,12 +293,94 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(320) NOT NULL,
   display_name VARCHAR(120) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
+  profile_about LONGTEXT NULL,
+  profile_pronouns VARCHAR(80) NOT NULL DEFAULT '',
+  profile_timezone VARCHAR(80) NOT NULL DEFAULT '',
+  profile_image_url LONGTEXT NULL,
+  use_gravatar BOOLEAN NOT NULL DEFAULT FALSE,
+  auto_subscribe_forum_threads BOOLEAN NOT NULL DEFAULT FALSE,
+  community_role VARCHAR(32) NOT NULL DEFAULT 'community_member',
   email_verified_at TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_users_email (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_about LONGTEXT NULL AFTER password_hash;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pronouns VARCHAR(80) NOT NULL DEFAULT '' AFTER profile_about;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_timezone VARCHAR(80) NOT NULL DEFAULT '' AFTER profile_pronouns;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_image_url LONGTEXT NULL AFTER profile_timezone;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS use_gravatar BOOLEAN NOT NULL DEFAULT FALSE AFTER profile_image_url;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS auto_subscribe_forum_threads BOOLEAN NOT NULL DEFAULT FALSE AFTER use_gravatar;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS community_role VARCHAR(32) NOT NULL DEFAULT 'community_member' AFTER auto_subscribe_forum_threads;
+UPDATE users
+SET community_role = 'admin'
+WHERE id = (
+  SELECT id FROM (
+    SELECT id
+    FROM users
+    WHERE NOT EXISTS (SELECT 1 FROM users WHERE community_role = 'admin')
+    ORDER BY id
+    LIMIT 1
+  ) first_admin
+);
+
+CREATE TABLE IF NOT EXISTS public_forum_sections (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  slug VARCHAR(80) NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  description VARCHAR(255) NOT NULL DEFAULT '',
+  sort_order SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_public_forum_sections_slug (slug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS public_forum_threads (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  section_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(180) NOT NULL,
+  created_by_user_id VARCHAR(191) NOT NULL,
+  sticky BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_public_forum_threads_section (section_id, updated_at),
+  CONSTRAINT fk_public_forum_threads_section
+    FOREIGN KEY (section_id) REFERENCES public_forum_sections (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE public_forum_threads ADD COLUMN IF NOT EXISTS sticky BOOLEAN NOT NULL DEFAULT FALSE AFTER created_by_user_id;
+
+CREATE TABLE IF NOT EXISTS public_forum_posts (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  thread_id BIGINT UNSIGNED NOT NULL,
+  author_user_id VARCHAR(191) NOT NULL,
+  body_bbcode LONGTEXT NOT NULL,
+  deleted_at TIMESTAMP NULL,
+  edited_at TIMESTAMP NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_public_forum_posts_thread (thread_id, created_at),
+  CONSTRAINT fk_public_forum_posts_thread
+    FOREIGN KEY (thread_id) REFERENCES public_forum_threads (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO public_forum_sections (slug, title, description, sort_order)
+VALUES
+  ('announcements', 'Announcements', 'News and updates from PBPHUD.', 10),
+  ('general-discussion', 'General Discussion', 'Talk about play-by-post games, tables, and tools.', 20),
+  ('game-recruitment', 'Game Recruitment', 'Find players, tables, and campaigns.', 30),
+  ('help-and-support', 'Help and Support', 'Ask questions and get help using PBPHUD.', 40)
+ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  description = VALUES(description),
+  sort_order = VALUES(sort_order);
 
 CREATE TABLE IF NOT EXISTS email_verification_tokens (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

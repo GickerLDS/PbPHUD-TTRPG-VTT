@@ -9,36 +9,51 @@ import {
   createForumPost,
   createForumThread,
   createMap,
+  createPublicForumPost,
+  createPublicForumThread,
   deleteCampaignCast,
   deleteForumPost,
+  deletePublicForumPost,
   getAuthConfig,
   getCurrentUser,
   getForumThread,
   getMap,
   getMapById,
+  getPublicForumThread,
   getViewerUserId,
   inviteCampaignMember,
   inviteMapUser,
   listCampaigns,
   listCampaignCast,
+  listAdminUsers,
   listForumPostIdentities,
   listForumThreads,
   listMaps,
+  listPublicForumSections,
+  listPublicForumThreads,
   listTileAssets,
   loginAccount,
   logoutAccount,
+  markForumThreadRead,
   patchEntity,
   patchTile,
   registerAccount,
   resendVerificationEmail,
   saveMap,
   sendContactMessage,
+  sendForumThreadTestNotification,
+  setPublicForumThreadSticky,
   setMapVisibility,
   setViewerUserId,
   shareMap,
+  subscribeForumThread,
   updateCampaignCast,
   updateForumPost,
+  updateAdminUserRole,
+  updatePublicForumPost,
+  unsubscribeForumThread,
   unshareMap,
+  updateAccountProfile,
   verifyEmail
 } from './api.js';
 import { EntityPanel } from './components/EntityPanel.jsx';
@@ -60,6 +75,8 @@ const TOOLS = [
   { id: 'entity', label: 'Entity', icon: EntityIcon }
 ];
 
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+
 const defaultBackgroundImage = {
   src: '',
   width: 1000,
@@ -72,9 +89,11 @@ function App() {
   const path = window.location.pathname;
   const mapRouteMatch = path.match(/^\/maps\/(\d+)$/);
   const forumRouteMatch = path.match(/^\/campaigns\/(\d+)\/forums$/);
+  const isPublicForumsRoute = path === '/forums';
   const isAuthRoute = path === '/auth';
   const isContactRoute = path === '/contact';
   const isDashboardRoute = path === '/dashboard';
+  const isAdminRoute = path === '/admin';
   const isSplashRoute = path === '/';
   const [maps, setMaps] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -91,7 +110,7 @@ function App() {
   const [entities, setEntities] = useState([]);
   const [selectedEntityId, setSelectedEntityId] = useState('');
   const [rightTab, setRightTab] = useState('tiles');
-  const [panels, setPanels] = useState({ left: true, top: true, right: true });
+  const [panels, setPanels] = useState({ top: true, right: true });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [authUser, setAuthUser] = useState(null);
@@ -132,6 +151,19 @@ function App() {
   const [mapForumDraft, setMapForumDraft] = useState({ title: '', body: '' });
   const [forumPageThread, setForumPageThread] = useState(null);
   const [forumPageReplyDraft, setForumPageReplyDraft] = useState('');
+  const [publicForumSections, setPublicForumSections] = useState([]);
+  const [publicForumThreadsBySection, setPublicForumThreadsBySection] = useState({});
+  const [publicForumOpenSections, setPublicForumOpenSections] = useState({});
+  const [publicForumThread, setPublicForumThread] = useState(null);
+  const [publicForumNewThreadSection, setPublicForumNewThreadSection] = useState(null);
+  const [publicForumThreadDraft, setPublicForumThreadDraft] = useState({ title: '', body: '' });
+  const [publicForumReplyDraft, setPublicForumReplyDraft] = useState('');
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [testNotificationInfo, setTestNotificationInfo] = useState(null);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [accountDraft, setAccountDraft] = useState(buildAccountDraft(null));
+  const [accountPortraitCrop, setAccountPortraitCrop] = useState(null);
+  const [portraitRefreshKey, setPortraitRefreshKey] = useState(() => Date.now());
   const [editingPost, setEditingPost] = useState(null);
   const [mapInviteDraft, setMapInviteDraft] = useState('');
   const activeMapRef = useRef(null);
@@ -209,6 +241,16 @@ function App() {
       refreshCampaignPostIdentities(forumRouteMatch[1]);
     }
   }, [authUser?.id, path]);
+
+  useEffect(() => {
+    if (!isPublicForumsRoute) return;
+    refreshPublicForumSections();
+  }, [isPublicForumsRoute]);
+
+  useEffect(() => {
+    if (!authUser || !isAdminRoute || authUser.communityRole !== 'admin') return;
+    refreshAdminUsers();
+  }, [authUser?.id, authUser?.communityRole, isAdminRoute]);
 
   useEffect(() => {
     if (authMode !== 'register' || !authConfig.recaptchaSiteKey || authConfig.recaptchaType !== 'v2') return;
@@ -300,6 +342,14 @@ function App() {
     refreshMapForumThreads();
     refreshCampaignPostIdentities(activeMap.campaignId);
   }, [centerTab, activeMap?.id, activeMap?.campaignId]);
+
+  useEffect(() => {
+    scrollThreadToUnreadOrBottom(forumPageThread);
+  }, [forumPageThread?.id, forumPageThread?.firstUnreadPostId, forumPageThread?.posts?.length]);
+
+  useEffect(() => {
+    scrollThreadToUnreadOrBottom(selectedForumThread);
+  }, [selectedForumThread?.id, selectedForumThread?.firstUnreadPostId, selectedForumThread?.posts?.length]);
 
   useEffect(() => {
     if (!selectedKey) {
@@ -466,10 +516,78 @@ function App() {
     }
   }
 
+  function handleOpenAccountModal() {
+    setAccountDraft(buildAccountDraft(authUser));
+    setAccountModalOpen(true);
+    setError('');
+  }
+
+  async function handleAccountPortraitFile(file) {
+    if (!file) return;
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const image = await loadImage(dataUrl);
+      if (image.naturalWidth === image.naturalHeight && image.naturalWidth <= 512) {
+        setAccountDraft((current) => ({ ...current, profileImageUrl: dataUrl, useGravatar: false }));
+        return;
+      }
+      setAccountPortraitCrop(createPortraitCropState('account', 'profile', dataUrl, image));
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleApplyAccountPortraitCrop() {
+    if (!accountPortraitCrop) return;
+    try {
+      const profileImageUrl = await cropPortraitToDataUrl(accountPortraitCrop);
+      setAccountDraft((current) => ({ ...current, profileImageUrl, useGravatar: false }));
+      setAccountPortraitCrop(null);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleSaveAccountProfile(event) {
+    event.preventDefault();
+    try {
+      if (accountDraft.profileImageUrl) await validatePortraitSource(accountDraft.profileImageUrl);
+      const data = await updateAccountProfile({
+        displayName: accountDraft.displayName,
+        profileAbout: accountDraft.profileAbout,
+        profilePronouns: accountDraft.profilePronouns,
+        profileTimezone: accountDraft.profileTimezone,
+        profileImageUrl: accountDraft.profileImageUrl,
+        useGravatar: accountDraft.useGravatar,
+        autoSubscribeForumThreads: accountDraft.autoSubscribeForumThreads
+      });
+      setAuthUser(data.user);
+      setAccountDraft(buildAccountDraft(data.user));
+      setPortraitRefreshKey(Date.now());
+      setAccountModalOpen(false);
+      setMessage('Account settings saved');
+      setError('');
+      await refreshCampaigns();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function refreshCurrentUser() {
+    try {
+      const data = await getCurrentUser();
+      if (data.user) setAuthUser(data.user);
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function refreshCampaigns() {
     try {
       const data = await listCampaigns();
       setCampaigns(data.campaigns);
+      await Promise.all(data.campaigns.map((campaign) => refreshCampaignForumThreads(campaign.id)));
     } catch (err) {
       if (authUser) showError(err);
     }
@@ -575,6 +693,8 @@ function App() {
         visibleToPlayers: draft.visibleToPlayers !== false
       });
       setCampaignCast((current) => ({ ...current, [campaign.id]: data.cast }));
+      setPortraitRefreshKey(Date.now());
+      await refreshCampaignPostIdentities(campaign.id);
       setCampaignCastDraft((current) => ({
         ...current,
         [key]: { castType: 'npc', visibleToPlayers: true }
@@ -600,6 +720,8 @@ function App() {
         visibleToPlayers: draft.visibleToPlayers !== false
       });
       setCampaignCast((current) => ({ ...current, [campaignId]: data.cast }));
+      setPortraitRefreshKey(Date.now());
+      await refreshCampaignPostIdentities(campaignId);
       setMessage(`Updated ${name}`);
       setError('');
     } catch (err) {
@@ -612,6 +734,8 @@ function App() {
     try {
       const data = await deleteCampaignCast(campaignId, entry.id);
       setCampaignCast((current) => ({ ...current, [campaignId]: data.cast }));
+      setPortraitRefreshKey(Date.now());
+      await refreshCampaignPostIdentities(campaignId);
       setMessage(`Removed ${entry.name}`);
       setError('');
     } catch (err) {
@@ -672,6 +796,168 @@ function App() {
     }
   }
 
+  async function refreshPublicForumSections() {
+    try {
+      const data = await listPublicForumSections();
+      setPublicForumSections(data.sections);
+      setPublicForumOpenSections((current) => {
+        const next = { ...current };
+        for (const section of data.sections) {
+          if (next[section.slug] === undefined) next[section.slug] = true;
+        }
+        return next;
+      });
+      await Promise.all(data.sections.map((section) => refreshPublicForumThreads(section.slug)));
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function refreshPublicForumThreads(sectionSlug) {
+    try {
+      const data = await listPublicForumThreads(sectionSlug);
+      setPublicForumThreadsBySection((current) => ({ ...current, [sectionSlug]: data.threads }));
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function refreshAdminUsers() {
+    try {
+      const data = await listAdminUsers();
+      setAdminUsers(data.users);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleUpdateAdminUserRole(user, communityRole) {
+    try {
+      await updateAdminUserRole(user.userId, communityRole);
+      setMessage(`${user.displayName || user.email} is now ${formatCommunityRole(communityRole)}.`);
+      setError('');
+      await refreshAdminUsers();
+      if (authUser?.id === user.userId) await refreshCurrentUser();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  function handleTogglePublicForumSection(sectionSlug) {
+    setPublicForumOpenSections((current) => ({ ...current, [sectionSlug]: !current[sectionSlug] }));
+  }
+
+  function handleOpenPublicForumThreadModal(section) {
+    if (!authUser) {
+      showError(new Error('Sign in to create a public forum thread.'));
+      return;
+    }
+    setPublicForumNewThreadSection(section);
+    setPublicForumThreadDraft({ title: '', body: '' });
+    setError('');
+  }
+
+  async function handleSelectPublicForumThread(threadId) {
+    try {
+      const data = await getPublicForumThread(threadId);
+      setPublicForumThread(data.thread);
+      setPublicForumReplyDraft('');
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleCreatePublicForumThread(event) {
+    event.preventDefault();
+    if (!authUser) {
+      showError(new Error('Sign in to create a public forum thread.'));
+      return;
+    }
+    if (!publicForumNewThreadSection) return;
+    const title = publicForumThreadDraft.title.trim();
+    const body = publicForumThreadDraft.body.trim();
+    if (!title || !body) return;
+
+    try {
+      const data = await createPublicForumThread(publicForumNewThreadSection.slug, { title, body });
+      setPublicForumThreadDraft({ title: '', body: '' });
+      setPublicForumNewThreadSection(null);
+      setMessage(`Created public thread ${title}`);
+      setError('');
+      await refreshPublicForumThreads(publicForumNewThreadSection.slug);
+      setPublicForumThread(data.thread);
+      await refreshCurrentUser();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleCreatePublicForumPost(event) {
+    event.preventDefault();
+    if (!authUser) {
+      showError(new Error('Sign in to reply to public forum threads.'));
+      return;
+    }
+    const body = publicForumReplyDraft.trim();
+    if (!publicForumThread?.id || !body) return;
+
+    try {
+      const data = await createPublicForumPost(publicForumThread.id, body);
+      setPublicForumThread(data.thread);
+      setPublicForumReplyDraft('');
+      setMessage('Reply posted');
+      setError('');
+      if (data.thread?.sectionSlug) await refreshPublicForumThreads(data.thread.sectionSlug);
+      await refreshCurrentUser();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleSaveEditedPublicForumPost(event, threadId) {
+    event.preventDefault();
+    if (!editingPost?.postId || !editingPost.body.trim()) return;
+    try {
+      const data = await updatePublicForumPost(threadId, editingPost.postId, editingPost.body);
+      setPublicForumThread(data.thread);
+      setEditingPost(null);
+      setMessage('Post updated.');
+      setError('');
+      if (data.thread?.sectionSlug) await refreshPublicForumThreads(data.thread.sectionSlug);
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleDeletePublicForumPost(threadId, postId) {
+    if (!window.confirm('Delete this post text?')) return;
+    try {
+      const data = await deletePublicForumPost(threadId, postId);
+      setPublicForumThread(data.thread);
+      setEditingPost(null);
+      setMessage('Post deleted.');
+      setError('');
+      if (data.thread?.sectionSlug) await refreshPublicForumThreads(data.thread.sectionSlug);
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleTogglePublicForumSticky(thread) {
+    try {
+      const data = await setPublicForumThreadSticky(thread.id, !thread.sticky);
+      setPublicForumThread(data.thread);
+      setMessage(data.thread.sticky ? 'Thread marked sticky.' : 'Thread is no longer sticky.');
+      setError('');
+      if (data.thread?.sectionSlug) await refreshPublicForumThreads(data.thread.sectionSlug);
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function handleCreateCampaignForumThread(campaign) {
     const draft = campaignForumDraft[campaign.id] || {};
     const title = String(draft.title || '').trim();
@@ -685,6 +971,7 @@ function App() {
       setMessage(`Created forum thread ${title}`);
       setError('');
       await refreshCampaignForumThreads(campaign.id);
+      await refreshCurrentUser();
     } catch (err) {
       showError(err);
     }
@@ -705,6 +992,26 @@ function App() {
     }
   }
 
+  async function handleAssignMapForumThread(campaign, map, threadIdValue) {
+    const nextThreadId = threadIdValue ? Number.parseInt(threadIdValue, 10) : null;
+    const threads = campaignForumThreads[campaign.id] || [];
+    const currentlyAssigned = threads.filter((thread) => Number(thread.mapId) === Number(map.id));
+    try {
+      await Promise.all(currentlyAssigned.map((thread) => assignForumThreadMap(campaign.id, thread.id, null)));
+      if (nextThreadId) {
+        await assignForumThreadMap(campaign.id, nextThreadId, map.id);
+      }
+      setMessage(nextThreadId ? `Connected ${map.name} to a forum thread` : `Removed forum thread from ${map.name}`);
+      setError('');
+      await refreshCampaignForumThreads(campaign.id);
+      if (activeMap?.id === map.id && activeMap?.campaignId === campaign.id && centerTab === 'forums') {
+        await refreshMapForumThreads();
+      }
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function refreshMapForumThreads() {
     if (!activeMap?.campaignId || !activeMap?.id) return;
     try {
@@ -712,6 +1019,9 @@ function App() {
       setMapForumThreads(data.threads);
       if (selectedForumThread && !data.threads.some((thread) => thread.id === selectedForumThread.id)) {
         setSelectedForumThread(null);
+      } else if (!selectedForumThread && data.threads[0]) {
+        const threadData = await getForumThread(activeMap.campaignId, data.threads[0].id);
+        setSelectedForumThread(threadData.thread);
       }
     } catch (err) {
       showError(err);
@@ -748,6 +1058,7 @@ function App() {
       setMessage(`Created forum thread ${title}`);
       setError('');
       await refreshMapForumThreads();
+      await refreshCurrentUser();
     } catch (err) {
       showError(err);
     }
@@ -765,6 +1076,7 @@ function App() {
       setMessage('Reply posted');
       setError('');
       await refreshMapForumThreads();
+      await refreshCurrentUser();
     } catch (err) {
       showError(err);
     }
@@ -793,6 +1105,7 @@ function App() {
       setMessage('Reply posted');
       setError('');
       await refreshCampaignForumThreads(campaignId);
+      await refreshCurrentUser();
     } catch (err) {
       showError(err);
     }
@@ -835,6 +1148,54 @@ function App() {
       }
       setEditingPost(null);
       setMessage('Post deleted. Dice rolls remain in the thread.');
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleMarkForumThreadRead(campaignId, threadId, context = 'forum') {
+    try {
+      const data = await markForumThreadRead(campaignId, threadId);
+      if (context === 'map') {
+        setSelectedForumThread(data.thread);
+        await refreshMapForumThreads();
+      } else {
+        setForumPageThread(data.thread);
+        await refreshCampaignForumThreads(campaignId);
+      }
+      await refreshCampaigns();
+      setMessage('Thread marked read');
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleToggleForumThreadSubscription(campaignId, thread, context = 'forum') {
+    try {
+      const data = thread.subscribed
+        ? await unsubscribeForumThread(campaignId, thread.id)
+        : await subscribeForumThread(campaignId, thread.id);
+      if (context === 'map') {
+        setSelectedForumThread(data.thread);
+        await refreshMapForumThreads();
+      } else {
+        setForumPageThread(data.thread);
+        await refreshCampaignForumThreads(campaignId);
+      }
+      setMessage(thread.subscribed ? 'Thread subscription removed' : 'Thread subscription added');
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleSendForumThreadTestNotification(campaignId, threadId) {
+    try {
+      const data = await sendForumThreadTestNotification(campaignId, threadId);
+      setTestNotificationInfo(data.email);
+      setMessage(data.email?.sent ? 'Test notification sent to your account email' : 'Test notification attempt failed');
       setError('');
     } catch (err) {
       showError(err);
@@ -1236,22 +1597,93 @@ function App() {
       .catch(showError);
   }
 
+  const accountModals = authUser ? (
+    <>
+      {accountModalOpen && (
+        <AccountModal
+          user={authUser}
+          draft={accountDraft}
+          onDraftChange={setAccountDraft}
+          onPortraitFile={handleAccountPortraitFile}
+          onSubmit={handleSaveAccountProfile}
+          onCancel={() => setAccountModalOpen(false)}
+        />
+      )}
+      {accountPortraitCrop && (
+        <PortraitCropModal
+          crop={accountPortraitCrop}
+          onChange={setAccountPortraitCrop}
+          onCancel={() => setAccountPortraitCrop(null)}
+          onApply={handleApplyAccountPortraitCrop}
+        />
+      )}
+    </>
+  ) : null;
+
   if (isSplashRoute) {
-    return <SplashPage authUser={authUser} />;
+    return (
+      <>
+        <SplashPage authUser={authUser} onOpenAccount={handleOpenAccountModal} onLogout={handleLogout} />
+        {accountModals}
+      </>
+    );
   }
 
   if (isContactRoute) {
     return (
-      <ContactPage
-        authUser={authUser}
-        authConfig={authConfig}
-        contactDraft={contactDraft}
-        error={error}
-        message={message}
-        recaptchaRef={contactRecaptchaRef}
-        onContactDraftChange={setContactDraft}
-        onSubmit={handleContactSubmit}
-      />
+      <>
+        <ContactPage
+          authUser={authUser}
+          authConfig={authConfig}
+          contactDraft={contactDraft}
+          error={error}
+          message={message}
+          recaptchaRef={contactRecaptchaRef}
+          onContactDraftChange={setContactDraft}
+          onSubmit={handleContactSubmit}
+          onOpenAccount={handleOpenAccountModal}
+          onLogout={handleLogout}
+        />
+        {accountModals}
+      </>
+    );
+  }
+
+  if (isPublicForumsRoute) {
+    return (
+      <>
+        <PublicForumsPage
+          authUser={authUser}
+          sections={publicForumSections}
+          threadsBySection={publicForumThreadsBySection}
+          openSections={publicForumOpenSections}
+          selectedThread={publicForumThread}
+          newThreadSection={publicForumNewThreadSection}
+          threadDraft={publicForumThreadDraft}
+          replyDraft={publicForumReplyDraft}
+          message={message}
+          error={error}
+          portraitRefreshKey={portraitRefreshKey}
+          onOpenAccount={handleOpenAccountModal}
+          onLogout={handleLogout}
+          onToggleSection={handleTogglePublicForumSection}
+          onSelectThread={handleSelectPublicForumThread}
+          onOpenNewThread={handleOpenPublicForumThreadModal}
+          onCloseNewThread={() => setPublicForumNewThreadSection(null)}
+          onThreadDraftChange={setPublicForumThreadDraft}
+          onReplyDraftChange={setPublicForumReplyDraft}
+          onCreateThread={handleCreatePublicForumThread}
+          onCreatePost={handleCreatePublicForumPost}
+          editingPost={editingPost}
+          onStartEditPost={handleStartEditPost}
+          onEditDraftChange={(body) => setEditingPost((current) => ({ ...current, body }))}
+          onCancelEditPost={() => setEditingPost(null)}
+          onSaveEditPost={handleSaveEditedPublicForumPost}
+          onDeletePost={handleDeletePublicForumPost}
+          onToggleSticky={handleTogglePublicForumSticky}
+        />
+        {accountModals}
+      </>
     );
   }
 
@@ -1306,50 +1738,79 @@ function App() {
     );
   }
 
+  if (isAdminRoute) {
+    return (
+      <>
+        <AdminPage
+          authUser={authUser}
+          users={adminUsers}
+          message={message}
+          error={error}
+          onOpenAccount={handleOpenAccountModal}
+          onLogout={handleLogout}
+          onUpdateRole={handleUpdateAdminUserRole}
+        />
+        {accountModals}
+      </>
+    );
+  }
+
   if (forumRouteMatch) {
     const campaignId = Number.parseInt(forumRouteMatch[1], 10);
     const campaign = campaigns.find((item) => Number(item.id) === campaignId);
     return (
-      <ForumPage
-        campaign={campaign}
-        threads={campaignForumThreads[campaignId] || []}
-        selectedThread={forumPageThread}
-        postIdentities={campaignPostIdentities[campaignId] || []}
-        threadDraft={campaignForumDraft[campaignId] || {}}
-        replyDraft={forumPageReplyDraft}
-        message={message}
-        error={error}
-        authUser={authUser}
-        onLogout={handleLogout}
-        onRefresh={() => refreshCampaignForumThreads(campaignId)}
-        onSelectThread={(threadId) => handleSelectCampaignForumThread(campaignId, threadId)}
-        onThreadDraftChange={(draft) => setCampaignForumDraft((current) => ({
-          ...current,
-          [campaignId]: typeof draft === 'function' ? draft(current[campaignId] || {}) : draft
-        }))}
-        onCreateThread={() => campaign && handleCreateCampaignForumThread(campaign)}
-        onAssignThread={(threadId, mapId) => campaign && handleAssignCampaignForumThread(campaign, threadId, mapId)}
-        onReplyDraftChange={setForumPageReplyDraft}
-        onCreatePost={(event) => handleCreateCampaignForumPost(event, campaignId)}
-        editingPost={editingPost}
-        onStartEditPost={handleStartEditPost}
-        onEditDraftChange={(body) => setEditingPost((current) => ({ ...current, body }))}
-        onCancelEditPost={() => setEditingPost(null)}
-        onSaveEditPost={(event, threadId) => handleSaveEditedPost(event, campaignId, threadId, 'forum')}
-        onDeletePost={(threadId, postId) => handleDeleteForumPost(campaignId, threadId, postId, 'forum')}
-      />
+      <>
+        <ForumPage
+          campaign={campaign}
+          threads={campaignForumThreads[campaignId] || []}
+          selectedThread={forumPageThread}
+          postIdentities={campaignPostIdentities[campaignId] || []}
+          threadDraft={campaignForumDraft[campaignId] || {}}
+          replyDraft={forumPageReplyDraft}
+          message={message}
+          error={error}
+          authUser={authUser}
+          portraitRefreshKey={portraitRefreshKey}
+          onOpenAccount={handleOpenAccountModal}
+          onLogout={handleLogout}
+          onRefresh={() => refreshCampaignForumThreads(campaignId)}
+          onSelectThread={(threadId) => handleSelectCampaignForumThread(campaignId, threadId)}
+          onThreadDraftChange={(draft) => setCampaignForumDraft((current) => ({
+            ...current,
+            [campaignId]: typeof draft === 'function' ? draft(current[campaignId] || {}) : draft
+          }))}
+          onCreateThread={() => campaign && handleCreateCampaignForumThread(campaign)}
+          onAssignThread={(threadId, mapId) => campaign && handleAssignCampaignForumThread(campaign, threadId, mapId)}
+          onReplyDraftChange={setForumPageReplyDraft}
+          onCreatePost={(event) => handleCreateCampaignForumPost(event, campaignId)}
+          editingPost={editingPost}
+          onStartEditPost={handleStartEditPost}
+          onEditDraftChange={(body) => setEditingPost((current) => ({ ...current, body }))}
+          onCancelEditPost={() => setEditingPost(null)}
+          onSaveEditPost={(event, threadId) => handleSaveEditedPost(event, campaignId, threadId, 'forum')}
+          onDeletePost={(threadId, postId) => handleDeleteForumPost(campaignId, threadId, postId, 'forum')}
+          onMarkThreadRead={(threadId) => handleMarkForumThreadRead(campaignId, threadId, 'forum')}
+          onToggleSubscription={(thread) => handleToggleForumThreadSubscription(campaignId, thread, 'forum')}
+          onSendTestNotification={(threadId) => handleSendForumThreadTestNotification(campaignId, threadId)}
+        />
+        {testNotificationInfo && (
+          <TestNotificationModal info={testNotificationInfo} onClose={() => setTestNotificationInfo(null)} />
+        )}
+        {accountModals}
+      </>
     );
   }
 
   if (!mapRouteMatch) {
     return (
       <main className="dashboard-page">
-        <header className="dashboard-header">
-          <div>
-            <BrandLockup title="Campaign Dashboard" subtitle={`Signed in as ${authUser.displayName}`} />
-          </div>
-          <button type="button" onClick={handleLogout}>Sign out</button>
-        </header>
+        <SiteHeader
+          authUser={authUser}
+          title="Campaign Dashboard"
+          subtitle={`Signed in as ${authUser.displayName}`}
+          onOpenAccount={handleOpenAccountModal}
+          onLogout={handleLogout}
+        />
 
         <section className="dashboard-layout">
           <form className="dashboard-create" onSubmit={handleCreateCampaign}>
@@ -1369,10 +1830,20 @@ function App() {
                 <div className="campaign-card-header">
                   <div>
                     <h3>{campaign.name}</h3>
-                    <p>{campaign.role === 'owner' ? 'Owner' : 'Invited player'} · {campaign.mapCount} maps</p>
+                    <p>
+                      {campaign.role === 'owner' ? 'Owner' : 'Invited player'} · {campaign.mapCount} maps
+                      {campaign.unreadForumCount ? ` · ${campaign.unreadForumCount} unread forum posts` : ''}
+                    </p>
                   </div>
                   <div className="button-row">
-                    <a className="button" href={`/campaigns/${campaign.id}/forums`}>Open forums</a>
+                    <a
+                      className="button"
+                      href={`/campaigns/${campaign.id}/forums`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Open forums
+                    </a>
                     <button type="button" onClick={() => toggleCampaignCast(campaign.id)}>
                       {dashboardCastCampaignId === campaign.id ? 'Hide cast' : 'The Cast'}
                     </button>
@@ -1392,7 +1863,7 @@ function App() {
                       />
                       <button type="button" onClick={() => handleInviteCampaignMember(campaign.id)}>Invite</button>
                     </div>
-                    <div className="inline-form">
+                    <div className="inline-form campaign-map-form">
                       <input
                         value={campaignMapDraft[campaign.id]?.mapName || ''}
                         onChange={(event) => setCampaignMapDraft((current) => ({
@@ -1401,24 +1872,28 @@ function App() {
                         }))}
                         placeholder="New map name"
                       />
-                      <input
-                        value={campaignMapDraft[campaign.id]?.gridWidth || 40}
-                        onChange={(event) => setCampaignMapDraft((current) => ({
-                          ...current,
-                          [campaign.id]: { ...(current[campaign.id] || {}), gridWidth: event.target.value }
-                        }))}
-                        inputMode="numeric"
-                        aria-label="Map width"
-                      />
-                      <input
-                        value={campaignMapDraft[campaign.id]?.gridHeight || 40}
-                        onChange={(event) => setCampaignMapDraft((current) => ({
-                          ...current,
-                          [campaign.id]: { ...(current[campaign.id] || {}), gridHeight: event.target.value }
-                        }))}
-                        inputMode="numeric"
-                        aria-label="Map height"
-                      />
+                      <label className="compact-field">
+                        <span>Width</span>
+                        <input
+                          value={campaignMapDraft[campaign.id]?.gridWidth || 40}
+                          onChange={(event) => setCampaignMapDraft((current) => ({
+                            ...current,
+                            [campaign.id]: { ...(current[campaign.id] || {}), gridWidth: event.target.value }
+                          }))}
+                          inputMode="numeric"
+                        />
+                      </label>
+                      <label className="compact-field">
+                        <span>Height</span>
+                        <input
+                          value={campaignMapDraft[campaign.id]?.gridHeight || 40}
+                          onChange={(event) => setCampaignMapDraft((current) => ({
+                            ...current,
+                            [campaign.id]: { ...(current[campaign.id] || {}), gridHeight: event.target.value }
+                          }))}
+                          inputMode="numeric"
+                        />
+                      </label>
                       <button type="button" onClick={() => handleCreateCampaignMap(campaign.id)}>Create map</button>
                     </div>
                     <small>Members: {campaign.members.length ? campaign.members.join(', ') : 'No invited players yet'}</small>
@@ -1451,8 +1926,10 @@ function App() {
                           <div>
                             <strong>{thread.title}</strong>
                             <small>
-                              {thread.postCount} posts · by {thread.createdByDisplayName || thread.createdByUserId} · {thread.mapName ? `Map: ${thread.mapName}` : 'Campaign-wide'}
+                              {thread.postCount} posts · {thread.mapName ? `Map: ${thread.mapName}` : 'Campaign-wide'}
+                              {thread.hasUnread ? ` · ${thread.unreadCount} unread` : ''}
                             </small>
+                            <ThreadAuthorMeta thread={thread} />
                           </div>
                           {campaign.role === 'owner' && (
                             <select
@@ -1500,6 +1977,7 @@ function App() {
                           [campaign.id]: { ...(current[campaign.id] || {}), body: value }
                         }))}
                         postIdentities={campaignPostIdentities[campaign.id] || []}
+                        portraitRefreshKey={portraitRefreshKey}
                         placeholder="First post with BBCode"
                       />
                       <button type="button" onClick={() => handleCreateCampaignForumThread(campaign)}>Create thread</button>
@@ -1508,12 +1986,34 @@ function App() {
                 )}
 
                 <div className="dashboard-map-list">
-                  {campaign.maps.map((map) => (
-                    <a key={map.id} href={`/maps/${map.id}`}>
-                      <span>{map.name}</span>
-                      <small>{map.playerVisible ? 'Visible to players' : map.invited ? 'Specifically invited' : 'Hidden'}</small>
-                    </a>
-                  ))}
+                  {campaign.maps.map((map) => {
+                    const threads = campaignForumThreads[campaign.id] || [];
+                    const assignedThread = threads.find((thread) => Number(thread.mapId) === Number(map.id));
+                    return (
+                      <div className="dashboard-map-row" key={map.id}>
+                        <a href={`/maps/${map.id}`} target="_blank" rel="noopener noreferrer">
+                          <span>{map.name}</span>
+                          <small>{map.playerVisible ? 'Visible to players' : map.invited ? 'Specifically invited' : 'Hidden'}</small>
+                        </a>
+                        {campaign.role === 'owner' && (
+                          <label className="map-thread-linker">
+                            <span>Forum thread</span>
+                            <select
+                              value={assignedThread?.id || ''}
+                              onChange={(event) => handleAssignMapForumThread(campaign, map, event.target.value)}
+                            >
+                              <option value="">No linked thread</option>
+                              {threads.map((thread) => (
+                                <option key={thread.id} value={thread.id}>
+                                  {thread.title}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                      </div>
+                    );
+                  })}
                   {!campaign.maps.length && <p>No maps available.</p>}
                 </div>
               </article>
@@ -1530,6 +2030,7 @@ function App() {
             onApply={handleApplyPortraitCrop}
           />
         )}
+        {accountModals}
 
         {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
         <SiteFooter />
@@ -1541,7 +2042,9 @@ function App() {
     <main className="app">
       <header className="topbar">
         <div>
-          <BrandLockup title="PBPHud Map Editor" subtitle={activeMap?.campaign?.name || 'Campaign map and forum workspace'} />
+          <a className="brand-link" href="/" aria-label="PBPHUD home">
+            <BrandLockup title="PBPHud Map Editor" subtitle={activeMap?.campaign?.name || 'Campaign map and forum workspace'} />
+          </a>
         </div>
         <div className="topbar-actions">
           {authUser ? (
@@ -1549,6 +2052,7 @@ function App() {
               <span>Signed in as</span>
               <strong>{authUser.displayName}</strong>
               <small>{authUser.email}</small>
+              <button type="button" onClick={handleOpenAccountModal}>Account</button>
               <button type="button" onClick={handleLogout}>Sign out</button>
             </div>
           ) : (
@@ -1605,14 +2109,6 @@ function App() {
           <div className="panel-switches" aria-label="Panel visibility">
             <button
               type="button"
-              className={panels.left ? 'selected' : ''}
-              onClick={() => togglePanel('left')}
-              aria-pressed={panels.left}
-            >
-              Maps
-            </button>
-            <button
-              type="button"
               className={panels.top ? 'selected' : ''}
               onClick={() => togglePanel('top')}
               aria-pressed={panels.top}
@@ -1635,108 +2131,9 @@ function App() {
       <section
         className={[
           'workspace',
-          panels.left ? '' : 'left-panel-collapsed',
           panels.right ? '' : 'right-panel-collapsed'
         ].filter(Boolean).join(' ')}
       >
-        <nav className="sidebar">
-          {viewerUserId && (
-          <form className="create-form" onSubmit={handleCreateMap}>
-            <strong>New Map</strong>
-            <input
-              value={newMap.groupName}
-              onChange={(event) => setNewMap({ ...newMap, groupName: event.target.value })}
-              placeholder="Group"
-            />
-            <input
-              value={newMap.mapName}
-              onChange={(event) => setNewMap({ ...newMap, mapName: event.target.value })}
-              placeholder="Map name"
-            />
-            <input
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={newMap.gridWidth}
-              onChange={(event) => setNewMap({ ...newMap, gridWidth: event.target.value })}
-              placeholder="Width squares"
-            />
-            <input
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={newMap.gridHeight}
-              onChange={(event) => setNewMap({ ...newMap, gridHeight: event.target.value })}
-              placeholder="Height squares"
-            />
-            <button type="submit">Create</button>
-          </form>
-          )}
-
-          <div className="map-list">
-            <strong>Maps</strong>
-            {maps.map((map) => {
-              const key = `${map.groupName}/${map.mapName}`;
-              return (
-                <button
-                  key={key}
-                  className={key === selectedKey ? 'selected' : ''}
-                  onClick={() => loadMap(map.groupName, map.mapName)}
-                >
-                  {key}
-                </button>
-              );
-            })}
-          </div>
-
-          {activeMap && (
-            <section className="share-panel">
-              <strong>Map Access</strong>
-              {activeMap.campaign && <small>Campaign: {activeMap.campaign.name}</small>}
-              <small>Owner: {activeMap.ownerUserId || 'Legacy open map'}</small>
-              {permissions.canEditMaps && activeMap.campaignId && (
-                <>
-                  <button type="button" onClick={handleToggleMapVisibility}>
-                    {activeMap.playerVisible ? 'Hide from campaign players' : 'Show to campaign players'}
-                  </button>
-                  <form onSubmit={handleInviteMapUser}>
-                    <input
-                      value={mapInviteDraft}
-                      onChange={(event) => setMapInviteDraft(event.target.value)}
-                      placeholder="Campaign member user id"
-                    />
-                    <button type="submit">Invite to map</button>
-                  </form>
-                  <small>
-                    Map-only invites: {(activeMap.invitedUserIds || []).length ? activeMap.invitedUserIds.join(', ') : 'None'}
-                  </small>
-                </>
-              )}
-              {permissions.canShareMap && (
-                <form onSubmit={handleShareMap}>
-                  <input
-                    value={shareUserId}
-                    onChange={(event) => setShareUserId(event.target.value)}
-                    placeholder="User id to share"
-                  />
-                  <button type="submit">Share</button>
-                </form>
-              )}
-              <div className="share-list">
-                {(activeMap.sharedUserIds || []).map((userId) => (
-                  <span key={userId}>
-                    {userId}
-                    {permissions.canShareMap && (
-                      <button type="button" onClick={() => handleUnshareMap(userId)} aria-label={`Remove ${userId}`}>
-                        Remove
-                      </button>
-                    )}
-                  </span>
-                ))}
-                {!(activeMap.sharedUserIds || []).length && <small>No shared users</small>}
-              </div>
-            </section>
-          )}
-        </nav>
-
         <section className={`map-panel ${panels.top ? '' : 'top-panel-collapsed'}`}>
           <div className="center-tabs" role="tablist" aria-label="Center panel">
             <button
@@ -1786,7 +2183,7 @@ function App() {
 
                 <div className="draw-options" aria-label="Drawing options">
                   <label className="size-control map-size-control">
-                    <span>Map W</span>
+                    <span>Map width</span>
                     <input
                       inputMode="numeric"
                       pattern="[0-9]*"
@@ -1800,7 +2197,7 @@ function App() {
                     />
                   </label>
                   <label className="size-control map-size-control">
-                    <span>Map H</span>
+                    <span>Map height</span>
                     <input
                       inputMode="numeric"
                       pattern="[0-9]*"
@@ -1946,12 +2343,9 @@ function App() {
               threads={mapForumThreads}
               selectedThread={selectedForumThread}
               postIdentities={campaignPostIdentities[activeMap?.campaignId] || []}
-              threadDraft={mapForumDraft}
               replyDraft={forumReplyDraft}
-              onThreadDraftChange={setMapForumDraft}
+              portraitRefreshKey={portraitRefreshKey}
               onReplyDraftChange={setForumReplyDraft}
-              onCreateThread={handleCreateMapForumThread}
-              onSelectThread={handleSelectMapForumThread}
               onCreatePost={handleCreateMapForumPost}
               viewerUserId={viewerUserId}
               editingPost={editingPost}
@@ -1960,6 +2354,9 @@ function App() {
               onCancelEditPost={() => setEditingPost(null)}
               onSaveEditPost={(event, threadId) => handleSaveEditedPost(event, activeMap.campaignId, threadId, 'map')}
               onDeletePost={(threadId, postId) => handleDeleteForumPost(activeMap.campaignId, threadId, postId, 'map')}
+              onMarkThreadRead={(threadId) => handleMarkForumThreadRead(activeMap.campaignId, threadId, 'map')}
+              onToggleSubscription={(thread) => handleToggleForumThreadSubscription(activeMap.campaignId, thread, 'map')}
+              onSendTestNotification={(threadId) => handleSendForumThreadTestNotification(activeMap.campaignId, threadId)}
             />
           )}
         </section>
@@ -2024,6 +2421,10 @@ function App() {
           {error || message}
         </footer>
       )}
+      {testNotificationInfo && (
+        <TestNotificationModal info={testNotificationInfo} onClose={() => setTestNotificationInfo(null)} />
+      )}
+      {accountModals}
       <SiteFooter compact />
     </main>
   );
@@ -2045,6 +2446,27 @@ function parseGridDimension(value, fallback = null) {
 
 function getCastDraftKey(campaignId, entryId) {
   return `${campaignId}:${entryId}`;
+}
+
+function buildAccountDraft(user) {
+  return {
+    displayName: user?.displayName || '',
+    profileAbout: user?.profileAbout || '',
+    profilePronouns: user?.profilePronouns || '',
+    profileTimezone: user?.profileTimezone || '',
+    profileImageUrl: user?.profileImageUrl || '',
+    useGravatar: Boolean(user?.useGravatar),
+    autoSubscribeForumThreads: Boolean(user?.autoSubscribeForumThreads)
+  };
+}
+
+function getInitials(value) {
+  const words = String(value || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return 'PB';
+  return words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join('');
 }
 
 function readFileAsDataUrl(file) {
@@ -2140,6 +2562,17 @@ function readNumberInput(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function scrollThreadToUnreadOrBottom(thread) {
+  if (!thread?.posts?.length) return;
+  window.requestAnimationFrame(() => {
+    const targetPostId = thread.firstUnreadPostId || thread.posts.at(-1)?.id;
+    const target = document.getElementById(`forum-post-${targetPostId}`);
+    if (target) {
+      target.scrollIntoView({ block: thread.firstUnreadPostId ? 'center' : 'end' });
+    }
+  });
+}
+
 function canControlEntity(entity, entities, viewerUserId, permissions) {
   if (permissions.canManageEntities) return true;
   if (!permissions.canControlEntities || !viewerUserId) return false;
@@ -2208,23 +2641,10 @@ function loadRecaptchaScript(siteKey, type = 'v2') {
   });
 }
 
-function SplashPage({ authUser }) {
+function SplashPage({ authUser, onOpenAccount, onLogout }) {
   return (
     <main className="splash-page">
-      <header className="site-header">
-        <a className="brand-link" href="/" aria-label="PBPHUD home">
-          <BrandLockup />
-        </a>
-        <nav className="main-nav" aria-label="Site pages">
-          <a href="#overview">Overview</a>
-          <a href="#forums">Forums</a>
-          <a href="#maps">Maps</a>
-          <a href={authUser ? '/dashboard' : '/auth'}>{authUser ? 'Dashboard' : 'Sign in'}</a>
-        </nav>
-        <a className="button button-primary" href={authUser ? '/dashboard' : '/auth?mode=register'}>
-          {authUser ? 'Enter dashboard' : 'Start a campaign'}
-        </a>
-      </header>
+      <SiteHeader authUser={authUser} onOpenAccount={onOpenAccount} onLogout={onLogout} />
 
       <section className="splash-hero">
         <div className="hero-copy">
@@ -2321,20 +2741,13 @@ function ContactPage({
   message,
   recaptchaRef,
   onContactDraftChange,
-  onSubmit
+  onSubmit,
+  onOpenAccount,
+  onLogout
 }) {
   return (
     <main className="contact-page">
-      <header className="site-header">
-        <a className="brand-link" href="/" aria-label="PBPHUD home">
-          <BrandLockup />
-        </a>
-        <nav className="main-nav" aria-label="Site pages">
-          <a href="/">Home</a>
-          <a href={authUser ? '/dashboard' : '/auth'}>{authUser ? 'Dashboard' : 'Sign in'}</a>
-          <a href="/contact">Contact</a>
-        </nav>
-      </header>
+      <SiteHeader authUser={authUser} onOpenAccount={onOpenAccount} onLogout={onLogout} />
 
       <section className="contact-layout">
         <div className="section-heading">
@@ -2610,6 +3023,159 @@ function CastPortraitControls({ campaignId, entryId, portraitUrl, onDraftChange,
   );
 }
 
+function AccountModal({
+  user,
+  draft,
+  onDraftChange,
+  onPortraitFile,
+  onSubmit,
+  onCancel
+}) {
+  const avatarUrl = draft.useGravatar ? user.gravatarUrl : draft.profileImageUrl;
+  const initials = getInitials(draft.displayName || user.email);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="confirm-modal account-modal" role="dialog" aria-modal="true" aria-label="Account settings">
+        <header>
+          <div>
+            <strong>Account</strong>
+            <small>Profile info and forum preferences</small>
+          </div>
+          <button type="button" onClick={onCancel}>Cancel</button>
+        </header>
+
+        <form className="account-form" onSubmit={onSubmit}>
+          <div className="account-profile-row">
+            <div className="account-avatar-preview" aria-hidden="true">
+              {avatarUrl ? <img src={avatarUrl} alt="" /> : <span>{initials}</span>}
+            </div>
+            <div className="account-picture-tools">
+              <label className="file-button">
+                Upload profile picture
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => onPortraitFile(event.target.files?.[0])}
+                />
+              </label>
+              {draft.profileImageUrl && (
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => onDraftChange((current) => ({ ...current, profileImageUrl: '' }))}
+                >
+                  Remove uploaded picture
+                </button>
+              )}
+              <small>Square image, 512x512 or smaller. Larger or non-square uploads open the crop tool.</small>
+            </div>
+          </div>
+
+          <AccountStats stats={user.stats} />
+
+          <label>
+            Email
+            <input value={user.email} readOnly />
+          </label>
+
+          <label>
+            Display name
+            <input
+              value={draft.displayName}
+              onChange={(event) => onDraftChange((current) => ({ ...current, displayName: event.target.value }))}
+              maxLength={120}
+            />
+          </label>
+
+          <div className="account-two-column">
+            <label>
+              Pronouns
+              <input
+                value={draft.profilePronouns}
+                onChange={(event) => onDraftChange((current) => ({ ...current, profilePronouns: event.target.value }))}
+                maxLength={80}
+                placeholder="Optional"
+              />
+            </label>
+            <label>
+              Time zone
+              <input
+                value={draft.profileTimezone}
+                onChange={(event) => onDraftChange((current) => ({ ...current, profileTimezone: event.target.value }))}
+                maxLength={80}
+                placeholder="Optional"
+              />
+            </label>
+          </div>
+
+          <label>
+            About you
+            <textarea
+              value={draft.profileAbout}
+              onChange={(event) => onDraftChange((current) => ({ ...current, profileAbout: event.target.value }))}
+              maxLength={4000}
+              placeholder="A short public profile note"
+              rows={5}
+            />
+          </label>
+
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={draft.useGravatar}
+              onChange={(event) => onDraftChange((current) => ({ ...current, useGravatar: event.target.checked }))}
+            />
+            Use my Gravatar picture for this account
+          </label>
+
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={draft.autoSubscribeForumThreads}
+              onChange={(event) => onDraftChange((current) => ({ ...current, autoSubscribeForumThreads: event.target.checked }))}
+            />
+            Auto-subscribe me to all campaign threads I can access
+          </label>
+
+          <div className="button-row">
+            <button type="submit">Save account</button>
+            <button type="button" onClick={onCancel}>Cancel</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function AccountStats({ stats = {} }) {
+  const items = [
+    ['Posts made', stats.postsMade],
+    ['Threads started', stats.threadsStarted],
+    ['Dice rolls made', stats.diceRollsMade],
+    ['Campaigns owned', stats.campaignsOwned],
+    ['Campaigns joined', stats.campaignsJoined],
+    ['Subscribed threads', stats.subscribedThreads]
+  ];
+
+  return (
+    <section className="account-stats" aria-label="Account statistics">
+      <div>
+        <strong>Statistics</strong>
+        <small>Your activity across campaigns and forums.</small>
+      </div>
+      <dl>
+        {items.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{Number(value || 0).toLocaleString()}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 function PortraitCropModal({ crop, onChange, onCancel, onApply }) {
   const previewSize = 280;
   const previewScale = previewSize / 512;
@@ -2679,6 +3245,61 @@ function PortraitCropModal({ crop, onChange, onCancel, onApply }) {
   );
 }
 
+function TestNotificationModal({ info, onClose }) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="confirm-modal test-email-modal" role="dialog" aria-modal="true" aria-label="Test notification email">
+        <header>
+          <strong>{info.sent ? 'Test notification sent' : 'Test notification failed'}</strong>
+        </header>
+        <dl className="test-email-details">
+          <div>
+            <dt>To</dt>
+            <dd>{info.to}</dd>
+          </div>
+          <div>
+            <dt>From</dt>
+            <dd>{info.from}</dd>
+          </div>
+          <div>
+            <dt>Subject</dt>
+            <dd>{info.subject}</dd>
+          </div>
+          <div>
+            <dt>Campaign</dt>
+            <dd>{info.campaignName}</dd>
+          </div>
+          <div>
+            <dt>Thread</dt>
+            <dd>{info.threadTitle}</dd>
+          </div>
+          <div>
+            <dt>Forum Link</dt>
+            <dd><a href={info.threadUrl} target="_blank" rel="noopener noreferrer">{info.threadUrl}</a></dd>
+          </div>
+          <div>
+            <dt>Transport</dt>
+            <dd>{info.transport || 'SMTP'}</dd>
+          </div>
+          <div>
+            <dt>SMTP Host</dt>
+            <dd>{info.smtpHost || ''}</dd>
+          </div>
+          {info.error && (
+            <div>
+              <dt>Error</dt>
+              <dd>{info.error.code ? `${info.error.code}: ` : ''}{info.error.message}</dd>
+            </div>
+          )}
+        </dl>
+        <div className="confirm-actions">
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ForumPage({
   campaign,
   threads,
@@ -2689,6 +3310,8 @@ function ForumPage({
   message,
   error,
   authUser,
+  portraitRefreshKey,
+  onOpenAccount,
   onLogout,
   onRefresh,
   onSelectThread,
@@ -2702,20 +3325,37 @@ function ForumPage({
   onEditDraftChange,
   onCancelEditPost,
   onSaveEditPost,
-  onDeletePost
+  onDeletePost,
+  onMarkThreadRead,
+  onToggleSubscription,
+  onSendTestNotification
 }) {
+  const [threadPage, setThreadPage] = useState(1);
+  const [threadPageSize, setThreadPageSize] = useState(10);
+  const [postPage, setPostPage] = useState(1);
+  const [postPageSize, setPostPageSize] = useState(10);
+  const pagedThreads = paginateItems(threads, threadPage, threadPageSize);
+  const posts = selectedThread?.posts || [];
+  const pagedPosts = paginateItems(posts, postPage, postPageSize);
+
+  useEffect(() => {
+    setPostPage(initialThreadPostPage(selectedThread, postPageSize));
+  }, [selectedThread?.id, postPageSize]);
+
+  useEffect(() => {
+    window.requestAnimationFrame(() => scrollThreadToUnreadOrBottom(selectedThread));
+  }, [selectedThread?.id, postPage, postPageSize, selectedThread?.posts?.length]);
+
   return (
     <main className="forum-page">
-      <header className="dashboard-header">
-        <div>
-          <BrandLockup title={campaign?.name || 'Campaign Forums'} subtitle={campaign ? `${threads.length} threads` : 'Loading campaign'} />
-        </div>
-        <div className="button-row">
-          <a className="button" href="/dashboard">Dashboard</a>
-          <button type="button" onClick={onRefresh} disabled={!campaign}>Refresh</button>
-          <button type="button" onClick={onLogout}>Sign out {authUser?.displayName ? `(${authUser.displayName})` : ''}</button>
-        </div>
-      </header>
+      <SiteHeader
+        authUser={authUser}
+        title={campaign?.name || 'Campaign Forums'}
+        subtitle={campaign ? `${threads.length} threads` : 'Loading campaign'}
+        onOpenAccount={onOpenAccount}
+        onLogout={onLogout}
+        actions={<button type="button" onClick={onRefresh} disabled={!campaign}>Refresh</button>}
+      />
 
       <section className="forum-page-layout">
         <aside className="forum-index-panel">
@@ -2724,7 +3364,7 @@ function ForumPage({
             {campaign && <small>{campaign.role === 'owner' ? 'Owner' : 'Member'}</small>}
           </div>
           <div className="forum-thread-list">
-            {threads.map((thread) => (
+            {pagedThreads.items.map((thread) => (
               <button
                 type="button"
                 key={thread.id}
@@ -2733,13 +3373,26 @@ function ForumPage({
               >
                 <span>{thread.title}</span>
                 <small>
-                  {thread.postCount} posts · by {thread.createdByDisplayName || thread.createdByUserId}
+                  {thread.postCount} posts
                   {thread.mapName ? ` · ${thread.mapName}` : ''}
                 </small>
+                <ThreadAuthorMeta thread={thread} />
+                {thread.hasUnread && <strong className="unread-pill">{thread.unreadCount} unread</strong>}
               </button>
             ))}
             {!threads.length && <p>No forum threads yet.</p>}
           </div>
+          <PaginationControls
+            label="Threads"
+            totalItems={threads.length}
+            page={pagedThreads.currentPage}
+            pageSize={threadPageSize}
+            onPageChange={setThreadPage}
+            onPageSizeChange={(size) => {
+              setThreadPageSize(size);
+              setThreadPage(1);
+            }}
+          />
         </aside>
 
         <section className="forum-main-panel">
@@ -2750,29 +3403,44 @@ function ForumPage({
               <header className="forum-thread-header">
                 <div>
                   <h2>{selectedThread.title}</h2>
-                  <p>{selectedThread.mapName ? `Assigned to ${selectedThread.mapName}` : 'Campaign-wide thread'}</p>
+                  <p>
+                    {selectedThread.mapName ? `Assigned to ${selectedThread.mapName}` : 'Campaign-wide thread'}
+                    {selectedThread.hasUnread ? ` · ${selectedThread.unreadCount} unread` : ' · all read'}
+                  </p>
                 </div>
-                {campaign.role === 'owner' && (
-                  <select
-                    value={selectedThread.mapId || ''}
-                    onChange={(event) => onAssignThread(selectedThread.id, event.target.value)}
-                    aria-label="Assign thread to map"
-                  >
-                    <option value="">Campaign-wide</option>
-                    {campaign.maps.map((map) => (
-                      <option key={map.id} value={map.id}>{map.name}</option>
-                    ))}
-                  </select>
-                )}
+                <div className="button-row">
+                  <button type="button" onClick={() => onToggleSubscription(selectedThread)}>
+                    {selectedThread.subscribed ? 'Unsubscribe' : 'Subscribe'}
+                  </button>
+                  <button type="button" onClick={() => onSendTestNotification(selectedThread.id)}>
+                    Test notification
+                  </button>
+                  <button type="button" onClick={() => onMarkThreadRead(selectedThread.id)} disabled={!selectedThread.posts.length}>
+                    Mark all read
+                  </button>
+                  {campaign.role === 'owner' && (
+                    <select
+                      value={selectedThread.mapId || ''}
+                      onChange={(event) => onAssignThread(selectedThread.id, event.target.value)}
+                      aria-label="Assign thread to map"
+                    >
+                      <option value="">Campaign-wide</option>
+                      {campaign.maps.map((map) => (
+                        <option key={map.id} value={map.id}>{map.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
               </header>
               <div className="forum-post-list">
-                {selectedThread.posts.map((post) => (
+                {pagedPosts.items.map((post) => (
                   <ForumPostArticle
                     key={post.id}
                     post={post}
                     threadId={selectedThread.id}
                     viewerUserId={authUser?.id}
                     canDelete={campaign.role === 'owner' || post.authorUserId === authUser?.id}
+                    portraitRefreshKey={portraitRefreshKey}
                     editingPost={editingPost}
                     onStartEditPost={onStartEditPost}
                     onEditDraftChange={onEditDraftChange}
@@ -2782,11 +3450,23 @@ function ForumPage({
                   />
                 ))}
               </div>
+              <PaginationControls
+                label="Posts"
+                totalItems={posts.length}
+                page={pagedPosts.currentPage}
+                pageSize={postPageSize}
+                onPageChange={setPostPage}
+                onPageSizeChange={(size) => {
+                  setPostPageSize(size);
+                  setPostPage(1);
+                }}
+              />
               <form className="forum-reply-form" onSubmit={onCreatePost}>
                 <BBCodeEditor
                   value={replyDraft}
                   onChange={onReplyDraftChange}
                   postIdentities={postIdentities}
+                  portraitRefreshKey={portraitRefreshKey}
                   placeholder="Reply with BBCode"
                 />
                 <button type="submit">Post reply</button>
@@ -2829,6 +3509,7 @@ function ForumPage({
               value={threadDraft.body || ''}
               onChange={(value) => onThreadDraftChange((current) => ({ ...current, body: value }))}
               postIdentities={postIdentities}
+              portraitRefreshKey={portraitRefreshKey}
               placeholder="First post"
             />
             <button type="submit" disabled={!campaign}>Create thread</button>
@@ -2854,6 +3535,37 @@ function BrandLockup({ title = 'PBPHUD', subtitle = 'Play-by-post RPG hub' }) {
   );
 }
 
+function SiteHeader({
+  authUser,
+  title = 'PBPHUD',
+  subtitle = 'Play-by-post RPG hub',
+  onOpenAccount,
+  onLogout,
+  actions = null
+}) {
+  return (
+    <header className="site-header">
+      <a className="brand-link" href="/" aria-label="PBPHUD home">
+        <BrandLockup title={title} subtitle={subtitle} />
+      </a>
+      <nav className="main-nav" aria-label="Site pages">
+        <a href="/">Home</a>
+        <a href="/forums">Forums</a>
+        {authUser && <a href="/dashboard">Dashboard</a>}
+        <a href="/contact">Contact</a>
+        {authUser?.communityRole === 'admin' && <a href="/admin">Admin</a>}
+        {actions}
+        {authUser && <button type="button" className="nav-button" onClick={onOpenAccount}>Account</button>}
+        {authUser ? (
+          <button type="button" className="nav-button" onClick={onLogout}>Sign out</button>
+        ) : (
+          <a className="nav-button" href="/auth">Sign in</a>
+        )}
+      </nav>
+    </header>
+  );
+}
+
 function SiteFooter({ compact = false }) {
   const year = new Date().getFullYear();
   return (
@@ -2873,9 +3585,171 @@ function SiteFooter({ compact = false }) {
         <a href="/auth">Sign in</a>
         <a href="/auth?mode=register">Register</a>
         <a href="/dashboard">Dashboard</a>
+        <a href="/forums">Forums</a>
         <a href="/contact">Contact</a>
       </nav>
     </footer>
+  );
+}
+
+function UserAvatar({ src, name, className = 'avatar' }) {
+  const initials = getInitials(name);
+  return (
+    <div className={className}>
+      {src ? <img src={src} alt="" /> : <span>{initials.slice(0, 2)}</span>}
+    </div>
+  );
+}
+
+function ThreadAuthorMeta({ thread }) {
+  return (
+    <span className="thread-author-meta">
+      <UserAvatar src={thread.createdByAvatarUrl} name={thread.createdByDisplayName || thread.createdByUserId} className="avatar tiny" />
+      <span>by {thread.createdByDisplayName || thread.createdByUserId}</span>
+      {thread.createdByRoleLabel && <span>{thread.createdByRoleLabel}</span>}
+      <span>{formatCount(thread.createdByPostCount, 'post')}</span>
+    </span>
+  );
+}
+
+function formatCount(value, noun) {
+  const count = Number(value || 0);
+  return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+function paginateItems(items, page, pageSize) {
+  const totalItems = items.length;
+  const pageCount = Math.max(1, Math.ceil(totalItems / pageSize));
+  const currentPage = Math.min(Math.max(Number(page) || 1, 1), pageCount);
+  const startIndex = (currentPage - 1) * pageSize;
+  return {
+    items: items.slice(startIndex, startIndex + pageSize),
+    currentPage,
+    pageCount,
+    start: totalItems ? startIndex + 1 : 0,
+    end: Math.min(startIndex + pageSize, totalItems),
+    totalItems
+  };
+}
+
+function initialThreadPostPage(thread, pageSize) {
+  const posts = thread?.posts || [];
+  if (!posts.length) return 1;
+  if (thread.firstUnreadPostId) {
+    const unreadIndex = posts.findIndex((post) => Number(post.id) === Number(thread.firstUnreadPostId));
+    if (unreadIndex >= 0) return Math.floor(unreadIndex / pageSize) + 1;
+  }
+  return Math.max(1, Math.ceil(posts.length / pageSize));
+}
+
+function PaginationControls({
+  label,
+  totalItems,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange
+}) {
+  if (!totalItems) return null;
+
+  const pageCount = Math.max(1, Math.ceil(totalItems / pageSize));
+  const currentPage = Math.min(Math.max(Number(page) || 1, 1), pageCount);
+  const start = totalItems ? ((currentPage - 1) * pageSize) + 1 : 0;
+  const end = Math.min(currentPage * pageSize, totalItems);
+
+  return (
+    <div className="pagination-controls">
+      <span>{label}: {start}-{end} of {totalItems}</span>
+      <label>
+        <span>Show</span>
+        <select
+          value={pageSize}
+          onChange={(event) => onPageSizeChange(Number(event.target.value))}
+        >
+          {PAGE_SIZE_OPTIONS.map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+      </label>
+      <div className="pagination-buttons">
+        <button type="button" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage <= 1}>
+          Previous
+        </button>
+        <span>Page {currentPage} of {pageCount}</span>
+        <button type="button" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage >= pageCount}>
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function formatCommunityRole(role) {
+  if (role === 'admin') return 'Admin';
+  if (role === 'moderator') return 'Moderator';
+  return 'Community Member';
+}
+
+function AdminPage({
+  authUser,
+  users,
+  message,
+  error,
+  onOpenAccount,
+  onLogout,
+  onUpdateRole
+}) {
+  const isAdmin = authUser?.communityRole === 'admin';
+  return (
+    <main className="admin-page">
+      <SiteHeader
+        authUser={authUser}
+        title="Community Admin"
+        subtitle="Manage public forum roles"
+        onOpenAccount={onOpenAccount}
+        onLogout={onLogout}
+      />
+
+      <section className="admin-layout">
+        <header className="page-section-header">
+          <div>
+            <h1>Community Members</h1>
+            <p>Assign public forum ranks for admins, moderators, and community members.</p>
+          </div>
+        </header>
+
+        {!isAdmin ? (
+          <div className="empty-state">Admin access is required.</div>
+        ) : (
+          <div className="admin-user-list">
+            {users.map((user) => (
+              <article className="admin-user-row" key={user.userId}>
+                <div>
+                  <strong>{user.displayName || user.email}</strong>
+                  <small>{user.email}</small>
+                  <small>{formatCount(user.postsMade, 'post')}</small>
+                </div>
+                <label>
+                  <span>Rank</span>
+                  <select
+                    value={user.communityRole}
+                    onChange={(event) => onUpdateRole(user, event.target.value)}
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="moderator">Moderator</option>
+                    <option value="community_member">Community Member</option>
+                  </select>
+                </label>
+              </article>
+            ))}
+            {!users.length && <div className="empty-state">No users found.</div>}
+          </div>
+        )}
+      </section>
+
+      {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
+      <SiteFooter />
+    </main>
   );
 }
 
@@ -2884,34 +3758,51 @@ function ForumPostArticle({
   threadId,
   viewerUserId,
   compact = false,
+  canEdit: canEditOverride = null,
   canDelete = false,
+  portraitRefreshKey = 0,
   editingPost,
   onStartEditPost,
   onEditDraftChange,
   onCancelEditPost,
   onSaveEditPost,
-  onDeletePost
+  onDeletePost,
+  onMarkThreadRead,
+  onToggleSubscription,
+  onSendTestNotification
 }) {
   const isAuthor = post.authorUserId === viewerUserId;
   const isEditing = editingPost?.postId === post.id;
-  const canEdit = isAuthor && !post.deleted;
+  const canEdit = (canEditOverride ?? isAuthor) && !post.deleted;
 
   return (
-    <article className={`forum-post ${compact ? 'compact' : ''} ${post.deleted ? 'deleted' : ''}`}>
+    <article
+      id={`forum-post-${post.id}`}
+      className={`forum-post ${compact ? 'compact' : ''} ${post.deleted ? 'deleted' : ''} ${post.unread ? 'unread-post' : ''}`}
+    >
       {!compact && (
         <aside className="post-author">
-          <div className="avatar">{(post.authorDisplayName || post.authorUserId || '?').slice(0, 1).toUpperCase()}</div>
+          <UserAvatar src={post.authorAvatarUrl} name={post.authorDisplayName || post.authorUserId} className="avatar" />
           <strong>{post.authorDisplayName || post.authorUserId}</strong>
-          <span>{post.authorUserId}</span>
+          {post.authorRoleLabel && <small>{post.authorRoleLabel}</small>}
+          <small>{formatCount(post.authorPostCount, 'post')}</small>
         </aside>
       )}
       <div className="post-body">
         <header>
           <div>
-            {compact && <strong>{post.authorDisplayName || post.authorUserId}</strong>}
+            {compact && (
+              <div className="compact-author-line">
+                <UserAvatar src={post.authorAvatarUrl} name={post.authorDisplayName || post.authorUserId} className="avatar small" />
+                <strong>{post.authorDisplayName || post.authorUserId}</strong>
+                {post.authorRoleLabel && <small>{post.authorRoleLabel}</small>}
+                <small>{formatCount(post.authorPostCount, 'post')}</small>
+              </div>
+            )}
             <time>{formatDateTime(post.createdAt)}</time>
             {post.editedAt && !post.deleted && <small>Edited {formatDateTime(post.editedAt)}</small>}
             {post.deleted && <small>Post text deleted {formatDateTime(post.deletedAt)}</small>}
+            {post.unread && <small className="unread-label">Unread</small>}
           </div>
           <div className="post-actions">
             {canEdit && !isEditing && <button type="button" onClick={() => onStartEditPost(post)}>Edit</button>}
@@ -2926,6 +3817,7 @@ function ForumPostArticle({
             <BBCodeEditor
               value={editingPost.body}
               onChange={onEditDraftChange}
+              portraitRefreshKey={portraitRefreshKey}
               placeholder="Edit post text. Existing dice rolls will not change."
             />
             <div className="button-row">
@@ -2937,7 +3829,7 @@ function ForumPostArticle({
         ) : post.deleted ? (
           <p className="deleted-post-note">This post text was deleted. Dice rolls are preserved below.</p>
         ) : (
-          <div className="bbcode-body" dangerouslySetInnerHTML={{ __html: renderBbcode(post.body) }} />
+          <div className="bbcode-body" dangerouslySetInnerHTML={{ __html: renderBbcode(post.body, portraitRefreshKey) }} />
         )}
 
         <DiceRollList rolls={post.rolls || []} />
@@ -2994,17 +3886,266 @@ function ShadowrunRollResult({ result }) {
   );
 }
 
+function PublicForumsPage({
+  authUser,
+  sections,
+  threadsBySection,
+  openSections,
+  selectedThread,
+  newThreadSection,
+  threadDraft,
+  replyDraft,
+  message,
+  error,
+  portraitRefreshKey,
+  onOpenAccount,
+  onLogout,
+  onToggleSection,
+  onSelectThread,
+  onOpenNewThread,
+  onCloseNewThread,
+  onThreadDraftChange,
+  onReplyDraftChange,
+  onCreateThread,
+  onCreatePost,
+  editingPost,
+  onStartEditPost,
+  onEditDraftChange,
+  onCancelEditPost,
+  onSaveEditPost,
+  onDeletePost,
+  onToggleSticky
+}) {
+  const [threadPagesBySection, setThreadPagesBySection] = useState({});
+  const [threadPageSize, setThreadPageSize] = useState(10);
+  const [postPage, setPostPage] = useState(1);
+  const [postPageSize, setPostPageSize] = useState(10);
+  const selectedPosts = selectedThread?.posts || [];
+  const pagedPosts = paginateItems(selectedPosts, postPage, postPageSize);
+
+  useEffect(() => {
+    setPostPage(1);
+  }, [selectedThread?.id]);
+
+  function setSectionPage(sectionSlug, page) {
+    setThreadPagesBySection((current) => ({ ...current, [sectionSlug]: page }));
+  }
+
+  return (
+    <main className="forum-page public-forums-page">
+      <SiteHeader
+        authUser={authUser}
+        title="Community Forums"
+        subtitle="Public PBPHUD discussion"
+        onOpenAccount={onOpenAccount}
+        onLogout={onLogout}
+      />
+
+      <section className="public-forum-layout traditional-forum-layout">
+        <section className="public-forum-card">
+          <div className="forum-panel-header">
+            <strong>Forums</strong>
+            <small>Anyone can read. Sign in to post.</small>
+          </div>
+          <div className="traditional-forum-list public-section-list accordion-forum-list">
+            {sections.map((section) => (
+              <section className="subforum-accordion" key={section.slug}>
+                <div className="traditional-forum-row subforum-header">
+                  <button
+                    type="button"
+                    className="subforum-toggle"
+                    onClick={() => onToggleSection(section.slug)}
+                    aria-expanded={openSections[section.slug] !== false}
+                  >
+                    <span className="accordion-indicator">{openSections[section.slug] === false ? '+' : '-'}</span>
+                    <span>
+                      <strong>{section.title}</strong>
+                      <small>{section.description}</small>
+                    </span>
+                  </button>
+                  <span>{formatCount(section.threadCount, 'thread')}</span>
+                  <span>{formatCount(section.postCount, 'post')}</span>
+                  <button type="button" onClick={() => onOpenNewThread(section)}>
+                    New post
+                  </button>
+                </div>
+
+                {openSections[section.slug] !== false && (
+                  <div className="traditional-thread-list accordion-thread-list">
+                    {(() => {
+                      const sectionThreads = threadsBySection[section.slug] || [];
+                      const pagedThreads = paginateItems(sectionThreads, threadPagesBySection[section.slug] || 1, threadPageSize);
+                      return (
+                        <>
+                          {pagedThreads.items.map((thread) => (
+                            <button
+                              type="button"
+                              key={thread.id}
+                              className={`traditional-thread-row ${selectedThread?.id === thread.id ? 'selected' : ''}`}
+                              onClick={() => onSelectThread(thread.id)}
+                            >
+                              <span>
+                                <strong>{thread.sticky && <span className="sticky-pill">Sticky</span>} {thread.title}</strong>
+                                <ThreadAuthorMeta thread={thread} />
+                              </span>
+                              <span>{formatCount(thread.postCount, 'post')}</span>
+                              <span>{thread.latestPostAt ? formatDateTime(thread.latestPostAt) : 'No posts yet'}</span>
+                            </button>
+                          ))}
+                          {!sectionThreads.length && (
+                            <p className="empty-subforum">No threads in this forum yet.</p>
+                          )}
+                          <PaginationControls
+                            label="Threads"
+                            totalItems={sectionThreads.length}
+                            page={pagedThreads.currentPage}
+                            pageSize={threadPageSize}
+                            onPageChange={(page) => setSectionPage(section.slug, page)}
+                            onPageSizeChange={(size) => {
+                              setThreadPageSize(size);
+                              setThreadPagesBySection({});
+                            }}
+                          />
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+              </section>
+            ))}
+          </div>
+        </section>
+
+        <section className="forum-main-panel public-forum-card">
+          {selectedThread ? (
+            <>
+              <header className="forum-thread-header">
+                <div>
+                  <h2>{selectedThread.title}</h2>
+                  <p>{selectedThread.sectionTitle || 'Public forum thread'} · {formatCount(selectedThread.postCount, 'post')}</p>
+                </div>
+                {selectedThread.canModerate && (
+                  <button type="button" onClick={() => onToggleSticky(selectedThread)}>
+                    {selectedThread.sticky ? 'Unstick thread' : 'Make sticky'}
+                  </button>
+                )}
+              </header>
+              <div className="forum-post-list">
+                {pagedPosts.items.map((post) => (
+                  <ForumPostArticle
+                    key={post.id}
+                    post={post}
+                    threadId={selectedThread.id}
+                    viewerUserId={authUser?.id || ''}
+                    canEdit={post.canEdit}
+                    canDelete={post.canDelete}
+                    portraitRefreshKey={portraitRefreshKey}
+                    editingPost={editingPost}
+                    onStartEditPost={onStartEditPost}
+                    onEditDraftChange={onEditDraftChange}
+                    onCancelEditPost={onCancelEditPost}
+                    onSaveEditPost={onSaveEditPost}
+                    onDeletePost={onDeletePost}
+                  />
+                ))}
+              </div>
+              <PaginationControls
+                label="Posts"
+                totalItems={selectedPosts.length}
+                page={pagedPosts.currentPage}
+                pageSize={postPageSize}
+                onPageChange={setPostPage}
+                onPageSizeChange={(size) => {
+                  setPostPageSize(size);
+                  setPostPage(1);
+                }}
+              />
+              {authUser ? (
+                <form className="forum-reply-form" onSubmit={onCreatePost}>
+                  <BBCodeEditor
+                    value={replyDraft}
+                    onChange={onReplyDraftChange}
+                    portraitRefreshKey={portraitRefreshKey}
+                    placeholder="Reply with BBCode"
+                  />
+                  <button type="submit">Post reply</button>
+                </form>
+              ) : (
+                <p className="auth-required-note"><a href="/auth">Sign in</a> or <a href="/auth?mode=register">register</a> to reply.</p>
+              )}
+            </>
+          ) : (
+            <div className="empty-state">Select a thread to read it.</div>
+          )}
+        </section>
+
+      </section>
+
+      {newThreadSection && (
+        <PublicThreadModal
+          section={newThreadSection}
+          draft={threadDraft}
+          portraitRefreshKey={portraitRefreshKey}
+          onDraftChange={onThreadDraftChange}
+          onSubmit={onCreateThread}
+          onCancel={onCloseNewThread}
+        />
+      )}
+
+      {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
+      <SiteFooter />
+    </main>
+  );
+}
+
+function PublicThreadModal({
+  section,
+  draft,
+  portraitRefreshKey,
+  onDraftChange,
+  onSubmit,
+  onCancel
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="confirm-modal public-thread-modal" role="dialog" aria-modal="true" aria-label={`New post in ${section.title}`}>
+        <header>
+          <div>
+            <strong>New post</strong>
+            <small>{section.title}</small>
+          </div>
+          <button type="button" onClick={onCancel}>Cancel</button>
+        </header>
+        <form className="forum-compose" onSubmit={onSubmit}>
+          <input
+            value={draft.title || ''}
+            onChange={(event) => onDraftChange((current) => ({ ...current, title: event.target.value }))}
+            placeholder="Thread title"
+          />
+          <BBCodeEditor
+            value={draft.body || ''}
+            onChange={(value) => onDraftChange((current) => ({ ...current, body: value }))}
+            portraitRefreshKey={portraitRefreshKey}
+            placeholder="First post"
+          />
+          <div className="button-row">
+            <button type="submit">Create thread</button>
+            <button type="button" onClick={onCancel}>Cancel</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function MapForumPanel({
   activeMap,
   threads,
   selectedThread,
   postIdentities,
-  threadDraft,
   replyDraft,
-  onThreadDraftChange,
+  portraitRefreshKey,
   onReplyDraftChange,
-  onCreateThread,
-  onSelectThread,
   onCreatePost,
   viewerUserId,
   editingPost,
@@ -3012,60 +4153,65 @@ function MapForumPanel({
   onEditDraftChange,
   onCancelEditPost,
   onSaveEditPost,
-  onDeletePost
+  onDeletePost,
+  onMarkThreadRead,
+  onToggleSubscription,
+  onSendTestNotification
 }) {
+  const [replyModalOpen, setReplyModalOpen] = useState(false);
+  const [postPage, setPostPage] = useState(1);
+  const [postPageSize, setPostPageSize] = useState(10);
+  const posts = selectedThread?.posts || [];
+  const pagedPosts = paginateItems(posts, postPage, postPageSize);
+
+  useEffect(() => {
+    setPostPage(initialThreadPostPage(selectedThread, postPageSize));
+  }, [selectedThread?.id, postPageSize]);
+
+  useEffect(() => {
+    window.requestAnimationFrame(() => scrollThreadToUnreadOrBottom(selectedThread));
+  }, [selectedThread?.id, postPage, postPageSize, selectedThread?.posts?.length]);
+
   if (!activeMap?.campaignId) {
     return <div className="empty-state">Forums are available for campaign maps.</div>;
   }
 
+  function handleSubmitReply(event) {
+    if (!replyDraft.trim()) {
+      event.preventDefault();
+      return;
+    }
+    onCreatePost(event);
+    setReplyModalOpen(false);
+  }
+
   return (
     <section className="map-forum-panel">
-      <aside className="map-forum-sidebar">
-        <div className="forum-panel-header">
-          <strong>Map Threads</strong>
-          <small>{activeMap.mapName}</small>
-        </div>
-        <div className="forum-thread-list">
-          {threads.map((thread) => (
-            <button
-              type="button"
-              key={thread.id}
-              className={selectedThread?.id === thread.id ? 'selected' : ''}
-              onClick={() => onSelectThread(thread.id)}
-            >
-              <span>{thread.title}</span>
-              <small>{thread.postCount} posts · by {thread.createdByDisplayName || thread.createdByUserId}</small>
-            </button>
-          ))}
-          {!threads.length && <p>No threads assigned to this map.</p>}
-        </div>
-        <form className="forum-compose" onSubmit={onCreateThread}>
-          <input
-            value={threadDraft.title}
-            onChange={(event) => onThreadDraftChange((current) => ({ ...current, title: event.target.value }))}
-            placeholder="Thread title"
-          />
-          <BBCodeEditor
-            value={threadDraft.body}
-            onChange={(value) => onThreadDraftChange((current) => ({ ...current, body: value }))}
-            postIdentities={postIdentities}
-            placeholder="First post with BBCode"
-          />
-          <button type="submit">Create map thread</button>
-        </form>
-      </aside>
-
       <section className="forum-thread-view">
         {selectedThread ? (
           <>
             <header className="forum-thread-header">
               <div>
                 <h2>{selectedThread.title}</h2>
-                <p>{selectedThread.mapName ? `Assigned to ${selectedThread.mapName}` : 'Campaign-wide'}</p>
+                <p>
+                  {selectedThread.mapName ? `Assigned to ${selectedThread.mapName}` : 'Campaign-wide'}
+                  {selectedThread.hasUnread ? ` · ${selectedThread.unreadCount} unread` : ' · all read'}
+                </p>
+              </div>
+              <div className="button-row">
+                <button type="button" onClick={() => onToggleSubscription(selectedThread)}>
+                  {selectedThread.subscribed ? 'Unsubscribe' : 'Subscribe'}
+                </button>
+                <button type="button" onClick={() => onSendTestNotification(selectedThread.id)}>
+                  Test notification
+                </button>
+                <button type="button" onClick={() => onMarkThreadRead(selectedThread.id)} disabled={!selectedThread.posts.length}>
+                  Mark all read
+                </button>
               </div>
             </header>
             <div className="forum-post-list">
-              {selectedThread.posts.map((post) => (
+              {pagedPosts.items.map((post) => (
                 <ForumPostArticle
                   key={post.id}
                   post={post}
@@ -3073,6 +4219,7 @@ function MapForumPanel({
                   viewerUserId={viewerUserId}
                   compact
                   canDelete={post.authorUserId === viewerUserId}
+                  portraitRefreshKey={portraitRefreshKey}
                   editingPost={editingPost}
                   onStartEditPost={onStartEditPost}
                   onEditDraftChange={onEditDraftChange}
@@ -3082,25 +4229,59 @@ function MapForumPanel({
                 />
               ))}
             </div>
-            <form className="forum-reply-form" onSubmit={onCreatePost}>
+            <PaginationControls
+              label="Posts"
+              totalItems={posts.length}
+              page={pagedPosts.currentPage}
+              pageSize={postPageSize}
+              onPageChange={setPostPage}
+              onPageSizeChange={(size) => {
+                setPostPageSize(size);
+                setPostPage(1);
+              }}
+            />
+            <footer className="forum-reply-actions">
+              <button type="button" onClick={() => setReplyModalOpen(true)}>New post</button>
+            </footer>
+          </>
+        ) : (
+          <div className="empty-state">
+            {threads.length ? 'Loading linked forum thread...' : 'No forum thread is linked to this map yet. Link one from the campaign editor.'}
+          </div>
+        )}
+      </section>
+
+      {replyModalOpen && selectedThread && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal map-forum-post-modal" role="dialog" aria-modal="true" aria-label={`New post in ${selectedThread.title}`}>
+            <header>
+              <div>
+                <strong>New post</strong>
+                <small>{selectedThread.title}</small>
+              </div>
+              <button type="button" onClick={() => setReplyModalOpen(false)}>Cancel</button>
+            </header>
+            <form className="forum-compose" onSubmit={handleSubmitReply}>
               <BBCodeEditor
                 value={replyDraft}
                 onChange={onReplyDraftChange}
                 postIdentities={postIdentities}
+                portraitRefreshKey={portraitRefreshKey}
                 placeholder="Reply with BBCode"
               />
-              <button type="submit">Post reply</button>
+              <div className="button-row">
+                <button type="submit">Post reply</button>
+                <button type="button" onClick={() => setReplyModalOpen(false)}>Cancel</button>
+              </div>
             </form>
-          </>
-        ) : (
-          <div className="empty-state">Select a thread or create one for this map.</div>
-        )}
-      </section>
+          </section>
+        </div>
+      )}
     </section>
   );
 }
 
-function BBCodeEditor({ value, onChange, placeholder, postIdentities = [] }) {
+function BBCodeEditor({ value, onChange, placeholder, postIdentities = [], portraitRefreshKey = 0 }) {
   const textareaRef = useRef(null);
 
   function wrapSelection(openTag, closeTag = null, fallback = '') {
@@ -3287,7 +4468,7 @@ function BBCodeEditor({ value, onChange, placeholder, postIdentities = [] }) {
         {value.trim() ? (
           <div
             className="bbcode-body"
-            dangerouslySetInnerHTML={{ __html: renderBbcode(value) }}
+            dangerouslySetInnerHTML={{ __html: renderBbcode(value, portraitRefreshKey) }}
           />
         ) : (
           <p>No preview yet.</p>
@@ -3297,7 +4478,7 @@ function BBCodeEditor({ value, onChange, placeholder, postIdentities = [] }) {
   );
 }
 
-function renderBbcode(input) {
+function renderBbcode(input, portraitRefreshKey = 0) {
   let html = escapeHtml(input);
   html = html
     .replace(/\[b\]([\s\S]*?)\[\/b\]/gi, '<strong>$1</strong>')
@@ -3325,24 +4506,32 @@ function renderBbcode(input) {
     .replace(/\[url=(https?:\/\/[^\s\]]+?)\]([\s\S]*?)\[\/url\]/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$2</a>')
     .replace(/\[img=center\](https?:\/\/[^\s[]+?)\[\/img\]/gi, '<img class="bbcode-image-center" src="$1" alt="" loading="lazy" />')
     .replace(/\[img\](https?:\/\/[^\s[]+?)\[\/img\]/gi, '<img src="$1" alt="" loading="lazy" />');
-  html = renderCharacterBbcode(html);
+  html = renderCharacterBbcode(html, portraitRefreshKey);
   html = renderBbcodeLists(html);
   html = html
     .replace(/\r?\n/g, '<br />');
   return html;
 }
 
-function renderCharacterBbcode(html) {
+function renderCharacterBbcode(html, portraitRefreshKey = 0) {
   return html.replace(/\[character\s+([^\]]+)\]([\s\S]*?)\[\/character\]/gi, (_match, attrText, content) => {
     const attrs = parseBbcodeAttributes(attrText);
     const name = attrs.name || 'Character';
     const typeClass = attrs.type === 'npc' ? ' npc' : '';
     const safeImage = sanitizeImageSource(attrs.image || '');
-    const portrait = safeImage
-      ? `<img src="${escapeHtml(safeImage)}" alt="" loading="lazy" />`
+    const portraitSrc = cacheBustInternalPortrait(safeImage, portraitRefreshKey);
+    const portrait = portraitSrc
+      ? `<img src="${escapeHtml(portraitSrc)}" alt="" loading="lazy" />`
       : `<span>${escapeHtml(name.slice(0, 2).toUpperCase())}</span>`;
     return `<section class="character-post${typeClass}"><div class="character-post-content"><header><strong>${escapeHtml(name)}</strong></header><aside class="character-portrait">${portrait}</aside><div class="character-post-text">${content}</div></div></section>`;
   });
+}
+
+function cacheBustInternalPortrait(src, refreshKey = 0) {
+  const value = String(src || '');
+  if (!/^\/api\/campaigns\/[^/]+\/cast\/[^/]+\/portrait(?:[?#].*)?$/i.test(value)) return value;
+  const separator = value.includes('?') ? '&' : '?';
+  return `${value}${separator}refresh=${encodeURIComponent(refreshKey || Date.now())}`;
 }
 
 function parseBbcodeAttributes(attrText) {

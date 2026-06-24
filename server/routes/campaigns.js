@@ -2,6 +2,14 @@ import crypto from 'node:crypto';
 import express from 'express';
 import { z } from 'zod';
 import { query, transaction } from '../db.js';
+import {
+  enqueueForumThreadNotifications,
+  sendForumThreadTestNotification
+} from '../forumNotifications.js';
+import {
+  subscribeAutoSubscribersToForumThread,
+  subscribeUserToCampaignThreadsIfEnabled
+} from '../forumSubscriptions.js';
 import { validate } from '../validation.js';
 
 export const campaignsRouter = express.Router();
@@ -71,8 +79,9 @@ campaignsRouter.get('/:campaignId/cast/:castId/portrait', async (req, res, next)
       return;
     }
 
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     if (/^https?:\/\//i.test(portraitUrl)) {
-      res.redirect(portraitUrl);
+      res.redirect(cacheBustExternalPortraitUrl(portraitUrl, req.query.v || req.query.refresh || ''));
       return;
     }
 
@@ -83,7 +92,6 @@ campaignsRouter.get('/:campaignId/cast/:castId/portrait', async (req, res, next)
     }
 
     res.setHeader('Content-Type', dataImage.mimeType);
-    res.setHeader('Cache-Control', 'public, max-age=3600');
     res.send(dataImage.buffer);
   } catch (error) {
     next(error);
@@ -126,6 +134,7 @@ campaignsRouter.get('/', async (req, res, next) => {
       ownerUserId: row.ownerUserId,
       role: row.ownerUserId === viewerUserId ? 'owner' : 'member',
       mapCount: Number(row.mapCount),
+      unreadForumCount: await loadCampaignUnreadForumCount(row.id, viewerUserId),
       members: row.ownerUserId === viewerUserId ? await loadCampaignMembers(row.id) : [],
       maps: await loadCampaignMaps(row.id, viewerUserId, row.ownerUserId === viewerUserId)
     })));
@@ -177,6 +186,7 @@ campaignsRouter.post('/:campaignId/members', async (req, res, next) => {
       );
     }
     await ensureCampaignPlayerCastEntries(campaign.id, campaign.owner_user_id);
+    await subscribeUserToCampaignThreadsIfEnabled(campaign.id, body.userId);
     res.json({ members: await loadCampaignMembers(campaign.id) });
   } catch (error) {
     next(error);
@@ -382,16 +392,36 @@ campaignsRouter.get('/:campaignId/forum/threads', async (req, res, next) => {
          thread.map_id AS mapId,
          thread.created_by_user_id AS createdByUserId,
          creator.display_name AS createdByDisplayName,
+         creator.email AS createdByEmail,
+         creator.profile_image_url AS createdByProfileImageUrl,
+         creator.use_gravatar AS createdByUseGravatar,
+         creator.updated_at AS createdByUpdatedAt,
+         creator_post_counts.postCount AS createdByPostCount,
          thread.created_at AS createdAt,
          thread.updated_at AS updatedAt,
          maps.map_name AS mapName,
          COUNT(post.id) AS postCount,
-         MAX(post.created_at) AS latestPostAt
+         MAX(post.created_at) AS latestPostAt,
+         COUNT(
+           CASE
+             WHEN post.author_user_id <> ?
+              AND (thread_read.last_read_post_id IS NULL OR post.id > thread_read.last_read_post_id)
+             THEN 1
+           END
+         ) AS unreadCount
        FROM campaign_forum_threads thread
        LEFT JOIN maps ON maps.id = thread.map_id
        LEFT JOIN users creator
          ON thread.created_by_user_id = CONCAT('user:', creator.id)
+       LEFT JOIN (
+         SELECT author_user_id, COUNT(*) AS postCount
+         FROM campaign_forum_posts
+         GROUP BY author_user_id
+       ) creator_post_counts ON creator_post_counts.author_user_id = thread.created_by_user_id
        LEFT JOIN campaign_forum_posts post ON post.thread_id = thread.id
+       LEFT JOIN campaign_forum_thread_reads thread_read
+         ON thread_read.thread_id = thread.id
+        AND thread_read.user_id = ?
        WHERE thread.campaign_id = ?
          AND (? IS NULL OR thread.map_id = ?)
        GROUP BY
@@ -400,11 +430,16 @@ campaignsRouter.get('/:campaignId/forum/threads', async (req, res, next) => {
          thread.map_id,
          thread.created_by_user_id,
          creator.display_name,
+         creator.email,
+         creator.profile_image_url,
+         creator.use_gravatar,
+         creator.updated_at,
+         creator_post_counts.postCount,
          thread.created_at,
          thread.updated_at,
          maps.map_name
        ORDER BY COALESCE(MAX(post.created_at), thread.updated_at) DESC, thread.created_at DESC`,
-      [campaign.id, mapId, mapId]
+      [userPublicId(req.user), userPublicId(req.user), campaign.id, mapId, mapId]
     );
 
     res.json({ threads: rows.map(formatThreadSummary) });
@@ -458,7 +493,8 @@ campaignsRouter.post('/:campaignId/forum/threads', async (req, res, next) => {
       return threadResult;
     });
 
-    const thread = await loadForumThread(result.insertId, campaign.id);
+    await subscribeAutoSubscribersToForumThread(campaign.id, Number(result.insertId));
+    const thread = await loadForumThread(result.insertId, campaign.id, viewerUserId);
     res.status(201).json({ thread });
   } catch (error) {
     next(error);
@@ -473,13 +509,117 @@ campaignsRouter.get('/:campaignId/forum/threads/:threadId', async (req, res, nex
       return;
     }
 
-    const thread = await loadForumThread(req.params.threadId, campaign.id);
+    const thread = await loadForumThread(req.params.threadId, campaign.id, userPublicId(req.user));
     if (!thread) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
 
     res.json({ thread });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.post('/:campaignId/forum/threads/:threadId/read', async (req, res, next) => {
+  try {
+    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    const thread = await loadForumThread(req.params.threadId, campaign.id, userPublicId(req.user));
+    if (!thread) {
+      res.status(404).json({ error: 'Forum thread not found' });
+      return;
+    }
+
+    await markThreadRead(thread.id, userPublicId(req.user));
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, userPublicId(req.user)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.post('/:campaignId/forum/threads/:threadId/subscription', async (req, res, next) => {
+  try {
+    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    const viewerUserId = userPublicId(req.user);
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId);
+    if (!thread) {
+      res.status(404).json({ error: 'Forum thread not found' });
+      return;
+    }
+
+    await query(
+      `INSERT INTO campaign_forum_thread_subscriptions (thread_id, user_id, notify_pending)
+       VALUES (?, ?, FALSE)
+       ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP`,
+      [thread.id, viewerUserId]
+    );
+
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.delete('/:campaignId/forum/threads/:threadId/subscription', async (req, res, next) => {
+  try {
+    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    const viewerUserId = userPublicId(req.user);
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId);
+    if (!thread) {
+      res.status(404).json({ error: 'Forum thread not found' });
+      return;
+    }
+
+    await query(
+      `DELETE FROM campaign_forum_thread_subscriptions WHERE thread_id = ? AND user_id = ?`,
+      [thread.id, viewerUserId]
+    );
+
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.post('/:campaignId/forum/threads/:threadId/test-notification', async (req, res, next) => {
+  try {
+    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    const viewerUserId = userPublicId(req.user);
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId);
+    if (!thread) {
+      res.status(404).json({ error: 'Forum thread not found' });
+      return;
+    }
+
+    const email = await sendForumThreadTestNotification({
+      campaignId: campaign.id,
+      campaignName: campaign.name,
+      threadTitle: thread.title,
+      toEmail: req.user.email,
+      displayName: req.user.display_name || req.user.email
+    });
+
+    res.json({ ok: email.sent, email });
   } catch (error) {
     next(error);
   }
@@ -494,19 +634,22 @@ campaignsRouter.post('/:campaignId/forum/threads/:threadId/posts', async (req, r
       return;
     }
 
-    const thread = await loadForumThread(req.params.threadId, campaign.id);
+    const viewerUserId = userPublicId(req.user);
+    const thread = await loadForumThread(req.params.threadId, campaign.id, viewerUserId);
     if (!thread) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
     }
 
-    const viewerUserId = userPublicId(req.user);
     const normalizedBody = await normalizeForumBodyCharacters(campaign.id, viewerUserId, campaign.owner_user_id === viewerUserId, body.body);
-    await transaction(async (connection) => {
-      await insertForumPost(connection, thread.id, viewerUserId, normalizedBody);
+    const postResult = await transaction(async (connection) => {
+      return insertForumPost(connection, thread.id, viewerUserId, normalizedBody);
+    });
+    enqueueForumThreadNotifications(campaign.id, thread.id, viewerUserId, Number(postResult.insertId)).catch((error) => {
+      console.warn('Forum subscription queueing failed', error);
     });
 
-    res.status(201).json({ thread: await loadForumThread(thread.id, campaign.id) });
+    res.status(201).json({ thread: await loadForumThread(thread.id, campaign.id, viewerUserId) });
   } catch (error) {
     next(error);
   }
@@ -549,7 +692,7 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/posts/:postId', asyn
       [normalizedBody, post.id]
     );
 
-    res.json({ thread: await loadForumThread(req.params.threadId, campaign.id) });
+    res.json({ thread: await loadForumThread(req.params.threadId, campaign.id, userPublicId(req.user)) });
   } catch (error) {
     next(error);
   }
@@ -582,7 +725,7 @@ campaignsRouter.delete('/:campaignId/forum/threads/:threadId/posts/:postId', asy
       [post.id]
     );
 
-    res.json({ thread: await loadForumThread(req.params.threadId, campaign.id) });
+    res.json({ thread: await loadForumThread(req.params.threadId, campaign.id, viewerUserId) });
   } catch (error) {
     next(error);
   }
@@ -597,7 +740,7 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/map', async (req, re
       return;
     }
 
-    const thread = await loadForumThread(req.params.threadId, campaign.id);
+    const thread = await loadForumThread(req.params.threadId, campaign.id, userPublicId(req.user));
     if (!thread) {
       res.status(404).json({ error: 'Forum thread not found' });
       return;
@@ -616,7 +759,7 @@ campaignsRouter.patch('/:campaignId/forum/threads/:threadId/map', async (req, re
       [body.mapId, thread.id, campaign.id]
     );
 
-    res.json({ thread: await loadForumThread(thread.id, campaign.id) });
+    res.json({ thread: await loadForumThread(thread.id, campaign.id, userPublicId(req.user)) });
   } catch (error) {
     next(error);
   }
@@ -652,6 +795,22 @@ async function loadCampaignMembers(campaignId) {
     [campaignId]
   );
   return rows.map((row) => row.userId);
+}
+
+async function loadCampaignUnreadForumCount(campaignId, viewerUserId) {
+  const rows = await query(
+    `SELECT COUNT(post.id) AS unreadCount
+     FROM campaign_forum_threads thread
+     INNER JOIN campaign_forum_posts post ON post.thread_id = thread.id
+     LEFT JOIN campaign_forum_thread_reads thread_read
+       ON thread_read.thread_id = thread.id
+      AND thread_read.user_id = ?
+     WHERE thread.campaign_id = ?
+       AND post.author_user_id <> ?
+       AND (thread_read.last_read_post_id IS NULL OR post.id > thread_read.last_read_post_id)`,
+    [viewerUserId, campaignId, viewerUserId]
+  );
+  return Number(rows[0]?.unreadCount || 0);
 }
 
 async function ensureCampaignPlayerCastEntries(campaignId, ownerUserId) {
@@ -765,8 +924,20 @@ function parseDataImage(value) {
   };
 }
 
-function castPortraitPath(campaignId, castId) {
-  return `/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}/portrait`;
+function castPortraitPath(campaignId, castId, version = '') {
+  const versionSuffix = version ? `?v=${encodeURIComponent(new Date(version).getTime() || String(version))}` : '';
+  return `/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}/portrait${versionSuffix}`;
+}
+
+function cacheBustExternalPortraitUrl(url, version = '') {
+  if (!version) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set('_pbphud_v', String(version));
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 async function loadCampaignMap(campaignId, mapId) {
@@ -834,7 +1005,8 @@ async function loadPostIdentities(campaignId, viewerUserId, isOwner) {
        owner_user_id AS ownerUserId,
        name,
        portrait_url AS portraitUrl,
-       visible_to_players AS visibleToPlayers
+       visible_to_players AS visibleToPlayers,
+       updated_at AS updatedAt
      FROM campaign_cast
      WHERE campaign_id = ?
        AND (? = TRUE OR (cast_type = 'player' AND owner_user_id = ?))`,
@@ -848,7 +1020,7 @@ async function loadPostIdentities(campaignId, viewerUserId, isOwner) {
       id: `cast:${row.id}`,
       type,
       name: row.name,
-      image: row.portraitUrl ? castPortraitPath(campaignId, row.id) : '',
+      image: row.portraitUrl ? castPortraitPath(campaignId, row.id, row.updatedAt) : '',
       subtitle: `${castTypeLabel(row.castType)} from The Cast`,
       source: {
         type: 'campaign-cast',
@@ -903,6 +1075,14 @@ function castTypeLabel(type) {
   if (type === 'monster') return 'Monster';
   if (type === 'npc') return 'NPC';
   return 'Character';
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
 function canUseEntityAsPostIdentity(entity, playerEntities, viewerUserId, isOwner) {
@@ -978,6 +1158,32 @@ async function insertForumPost(connection, threadId, authorUserId, body) {
     );
   }
   return postResult;
+}
+
+async function markThreadRead(threadId, viewerUserId) {
+  const rows = await query(
+    `SELECT id
+     FROM campaign_forum_posts
+     WHERE thread_id = ?
+     ORDER BY id DESC
+     LIMIT 1`,
+    [threadId]
+  );
+  const lastPostId = rows[0]?.id ? Number(rows[0].id) : null;
+  await query(
+    `INSERT INTO campaign_forum_thread_reads (thread_id, user_id, last_read_post_id, read_at)
+     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+     ON DUPLICATE KEY UPDATE
+       last_read_post_id = VALUES(last_read_post_id),
+       read_at = CURRENT_TIMESTAMP`,
+    [threadId, viewerUserId, lastPostId]
+  );
+  await query(
+    `UPDATE campaign_forum_thread_subscriptions
+     SET notify_pending = FALSE
+     WHERE thread_id = ? AND user_id = ?`,
+    [threadId, viewerUserId]
+  );
 }
 
 function resolveDiceRolls(body) {
@@ -1061,7 +1267,7 @@ function parseJson(value, fallback) {
   }
 }
 
-async function loadForumThread(threadId, campaignId) {
+async function loadForumThread(threadId, campaignId, viewerUserId = '') {
   const threadRows = await query(
     `SELECT
        thread.id,
@@ -1069,6 +1275,11 @@ async function loadForumThread(threadId, campaignId) {
        thread.map_id AS mapId,
        thread.created_by_user_id AS createdByUserId,
        creator.display_name AS createdByDisplayName,
+       creator.email AS createdByEmail,
+       creator.profile_image_url AS createdByProfileImageUrl,
+       creator.use_gravatar AS createdByUseGravatar,
+       creator.updated_at AS createdByUpdatedAt,
+       creator_post_counts.postCount AS createdByPostCount,
        thread.created_at AS createdAt,
        thread.updated_at AS updatedAt,
        maps.map_name AS mapName
@@ -1076,6 +1287,11 @@ async function loadForumThread(threadId, campaignId) {
      LEFT JOIN maps ON maps.id = thread.map_id
      LEFT JOIN users creator
        ON thread.created_by_user_id = CONCAT('user:', creator.id)
+     LEFT JOIN (
+       SELECT author_user_id, COUNT(*) AS postCount
+       FROM campaign_forum_posts
+       GROUP BY author_user_id
+     ) creator_post_counts ON creator_post_counts.author_user_id = thread.created_by_user_id
      WHERE thread.id = ? AND thread.campaign_id = ?
      LIMIT 1`,
     [threadId, campaignId]
@@ -1088,6 +1304,11 @@ async function loadForumThread(threadId, campaignId) {
        campaign_forum_posts.id,
        campaign_forum_posts.author_user_id AS authorUserId,
        author.display_name AS authorDisplayName,
+       author.email AS authorEmail,
+       author.profile_image_url AS authorProfileImageUrl,
+       author.use_gravatar AS authorUseGravatar,
+       author.updated_at AS authorUpdatedAt,
+       author_post_counts.postCount AS authorPostCount,
        campaign_forum_posts.body_bbcode AS body,
        campaign_forum_posts.deleted_at AS deletedAt,
        campaign_forum_posts.edited_at AS editedAt,
@@ -1096,6 +1317,11 @@ async function loadForumThread(threadId, campaignId) {
      FROM campaign_forum_posts
      LEFT JOIN users author
        ON campaign_forum_posts.author_user_id = CONCAT('user:', author.id)
+     LEFT JOIN (
+       SELECT author_user_id, COUNT(*) AS postCount
+       FROM campaign_forum_posts
+       GROUP BY author_user_id
+     ) author_post_counts ON author_post_counts.author_user_id = campaign_forum_posts.author_user_id
      WHERE thread_id = ?
      ORDER BY campaign_forum_posts.created_at, campaign_forum_posts.id`,
     [thread.id]
@@ -1128,13 +1354,56 @@ async function loadForumThread(threadId, campaignId) {
     });
     return rollsByPost;
   }, new Map());
+  const readRows = viewerUserId ? await query(
+    `SELECT last_read_post_id AS lastReadPostId
+     FROM campaign_forum_thread_reads
+     WHERE thread_id = ? AND user_id = ?
+     LIMIT 1`,
+    [thread.id, viewerUserId]
+  ) : [];
+  const lastReadPostId = Number(readRows[0]?.lastReadPostId || 0);
+  const subscriptionRows = viewerUserId ? await query(
+    `SELECT notify_pending AS notifyPending
+     FROM campaign_forum_thread_subscriptions
+     WHERE thread_id = ? AND user_id = ?
+     LIMIT 1`,
+    [thread.id, viewerUserId]
+  ) : [];
+  const unreadPosts = postRows.filter((post) => (
+    viewerUserId &&
+    post.authorUserId !== viewerUserId &&
+    Number(post.id) > lastReadPostId
+  ));
+  const authorLabels = await loadForumAuthorLabels(campaignId, [
+    thread.createdByUserId,
+    ...postRows.map((post) => post.authorUserId)
+  ]);
 
   return {
-    ...formatThreadSummary({ ...thread, postCount: postRows.length, latestPostAt: postRows.at(-1)?.createdAt || thread.updatedAt }),
+    ...formatThreadSummary({
+      ...thread,
+      createdByRoleLabel: authorLabels.get(thread.createdByUserId) || '',
+      postCount: postRows.length,
+      latestPostAt: postRows.at(-1)?.createdAt || thread.updatedAt,
+      unreadCount: unreadPosts.length
+    }),
+    firstUnreadPostId: unreadPosts[0] ? Number(unreadPosts[0].id) : null,
+    lastReadPostId: lastReadPostId || null,
+    subscribed: Boolean(subscriptionRows.length),
+    notificationPending: Boolean(subscriptionRows[0]?.notifyPending),
     posts: postRows.map((post) => ({
       id: Number(post.id),
       authorUserId: post.authorUserId,
       authorDisplayName: post.authorDisplayName || post.authorUserId,
+      authorRoleLabel: authorLabels.get(post.authorUserId) || '',
+      authorAvatarUrl: userAvatarUrl({
+        email: post.authorEmail,
+        profileImageUrl: post.authorProfileImageUrl,
+        useGravatar: post.authorUseGravatar,
+        updatedAt: post.authorUpdatedAt
+      }),
+      authorPostCount: Number(post.authorPostCount || 0),
+      unread: unreadPosts.some((unreadPost) => Number(unreadPost.id) === Number(post.id)),
       body: post.body,
       deleted: Boolean(post.deletedAt),
       deletedAt: post.deletedAt,
@@ -1154,13 +1423,55 @@ function formatThreadSummary(row) {
     mapName: row.mapName || '',
     createdByUserId: row.createdByUserId,
     createdByDisplayName: row.createdByDisplayName || row.createdByUserId,
+    createdByRoleLabel: row.createdByRoleLabel || '',
+    createdByAvatarUrl: userAvatarUrl({
+      email: row.createdByEmail,
+      profileImageUrl: row.createdByProfileImageUrl,
+      useGravatar: row.createdByUseGravatar,
+      updatedAt: row.createdByUpdatedAt
+    }),
+    createdByPostCount: Number(row.createdByPostCount || 0),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     postCount: Number(row.postCount || 0),
+    unreadCount: Number(row.unreadCount || 0),
+    hasUnread: Number(row.unreadCount || 0) > 0,
     latestPostAt: row.latestPostAt || row.updatedAt
   };
 }
 
 function userPublicId(user) {
   return `user:${user.id}`;
+}
+
+async function loadForumAuthorLabels(campaignId, authorUserIds) {
+  const uniqueUserIds = [...new Set(authorUserIds.filter(Boolean))];
+  if (!uniqueUserIds.length) return new Map();
+  const rows = await query(
+    `SELECT
+       users.user_id AS userId,
+       CASE
+         WHEN users.user_id = campaign.owner_user_id THEN 'Game Master'
+         ELSE COALESCE(player_cast.name, '')
+       END AS roleLabel
+     FROM (
+       ${uniqueUserIds.map(() => 'SELECT ? AS user_id').join(' UNION ALL ')}
+     ) users
+     INNER JOIN campaigns campaign ON campaign.id = ?
+     LEFT JOIN campaign_cast player_cast
+       ON player_cast.campaign_id = campaign.id
+      AND player_cast.cast_type = 'player'
+      AND player_cast.owner_user_id = users.user_id`,
+    [...uniqueUserIds, campaignId]
+  );
+  return new Map(rows.map((row) => [row.userId, row.roleLabel || '']));
+}
+
+function userAvatarUrl({ email, profileImageUrl, useGravatar, updatedAt }) {
+  if (useGravatar && email) {
+    const hash = crypto.createHash('md5').update(String(email).trim().toLowerCase()).digest('hex');
+    const version = updatedAt ? `&v=${encodeURIComponent(new Date(updatedAt).getTime() || String(updatedAt))}` : '';
+    return `https://www.gravatar.com/avatar/${hash}?s=128&d=identicon${version}`;
+  }
+  return profileImageUrl || '';
 }
