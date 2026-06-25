@@ -97,6 +97,26 @@ CREATE TABLE IF NOT EXISTS campaign_members (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS campaign_ownership_transfer_invites (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  campaign_id BIGINT UNSIGNED NOT NULL,
+  current_owner_user_id VARCHAR(191) NOT NULL,
+  invited_owner_user_id VARCHAR(191) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  expires_at TIMESTAMP NOT NULL,
+  responded_at TIMESTAMP NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_campaign_ownership_transfer_token (token_hash),
+  KEY idx_campaign_ownership_transfer_campaign (campaign_id, status),
+  KEY idx_campaign_ownership_transfer_invited (invited_owner_user_id, status),
+  CONSTRAINT fk_campaign_ownership_transfer_campaign
+    FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS campaign_cast (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   campaign_id BIGINT UNSIGNED NOT NULL,

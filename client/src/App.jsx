@@ -8,6 +8,7 @@ import {
   createCampaignMap,
   createForumPost,
   createForumThread,
+  createCampaignOwnershipTransfer,
   createMap,
   createPublicForumPost,
   createPublicForumThread,
@@ -19,6 +20,7 @@ import {
   getCurrentUser,
   getDemoAssignment,
   getForumThread,
+  getCampaignOwnershipTransfer,
   getMap,
   getMapById,
   getPublicForumThread,
@@ -41,6 +43,7 @@ import {
   patchTile,
   registerAccount,
   resendVerificationEmail,
+  respondCampaignOwnershipTransfer,
   saveMap,
   sendContactMessage,
   sendForumThreadTestNotification,
@@ -105,11 +108,15 @@ function App() {
   const path = window.location.pathname;
   const mapRouteMatch = path.match(/^\/maps\/(\d+)$/);
   const forumRouteMatch = path.match(/^\/campaigns\/(\d+)\/forums$/);
-  const isPublicForumsRoute = path === '/forums';
+  const publicForumRouteMatch = path.match(/^\/forums(?:\/([^/]+)(?:\/threads\/(\d+))?)?$/);
+  const isPublicForumsRoute = Boolean(publicForumRouteMatch);
+  const publicForumSectionSlug = publicForumRouteMatch?.[1] ? decodeURIComponent(publicForumRouteMatch[1]) : '';
+  const publicForumThreadId = publicForumRouteMatch?.[2] || '';
   const isDemoRoute = path === '/demo';
   const isAuthRoute = path === '/auth';
   const isContactRoute = path === '/contact';
   const isDashboardRoute = path === '/dashboard';
+  const isOwnershipTransferRoute = path === '/campaign-ownership-transfer';
   const isAdminRoute = path === '/admin';
   const isSplashRoute = path === '/';
   const [maps, setMaps] = useState([]);
@@ -152,6 +159,8 @@ function App() {
   const [shareUserId, setShareUserId] = useState('');
   const [campaignDraft, setCampaignDraft] = useState({ name: '' });
   const [campaignMemberDraft, setCampaignMemberDraft] = useState({});
+  const [campaignOwnershipTransferDraft, setCampaignOwnershipTransferDraft] = useState({});
+  const [ownershipTransferInvite, setOwnershipTransferInvite] = useState(null);
   const [campaignMapDraft, setCampaignMapDraft] = useState({});
   const [campaignCast, setCampaignCast] = useState({});
   const [campaignCastDraft, setCampaignCastDraft] = useState({});
@@ -169,7 +178,6 @@ function App() {
   const [forumPageReplyDraft, setForumPageReplyDraft] = useState('');
   const [publicForumSections, setPublicForumSections] = useState([]);
   const [publicForumThreadsBySection, setPublicForumThreadsBySection] = useState({});
-  const [publicForumOpenSections, setPublicForumOpenSections] = useState({});
   const [publicForumThread, setPublicForumThread] = useState(null);
   const [publicForumNewThreadSection, setPublicForumNewThreadSection] = useState(null);
   const [publicForumThreadDraft, setPublicForumThreadDraft] = useState({ title: '', body: '' });
@@ -277,10 +285,31 @@ function App() {
   }, [isPublicForumsRoute]);
 
   useEffect(() => {
+    if (!isPublicForumsRoute || !publicForumSectionSlug) {
+      setPublicForumThread(null);
+      return;
+    }
+    refreshPublicForumThreads(publicForumSectionSlug);
+  }, [isPublicForumsRoute, publicForumSectionSlug]);
+
+  useEffect(() => {
+    if (!isPublicForumsRoute || !publicForumThreadId) {
+      setPublicForumThread(null);
+      return;
+    }
+    handleSelectPublicForumThread(publicForumThreadId);
+  }, [isPublicForumsRoute, publicForumThreadId]);
+
+  useEffect(() => {
     if (!authUser || !isAdminRoute || authUser.communityRole !== 'admin') return;
     refreshAdminUsers();
     refreshAdminDemoOptions();
   }, [authUser?.id, authUser?.communityRole, isAdminRoute]);
+
+  useEffect(() => {
+    if (!authUser || !isOwnershipTransferRoute) return;
+    refreshOwnershipTransferInvite();
+  }, [authUser?.id, isOwnershipTransferRoute, window.location.search]);
 
   useEffect(() => {
     if (authMode !== 'register' || !authConfig.recaptchaSiteKey || authConfig.recaptchaType !== 'v2') return;
@@ -741,7 +770,7 @@ function App() {
         refreshCampaignPostIdentities(campaign.id)
       ]);
     }
-    if (type === 'cast') {
+    if (type === 'cast' || type === 'characters' || type === 'add-character') {
       await refreshCampaignCast(campaign.id);
     }
   }
@@ -874,18 +903,55 @@ function App() {
     }
   }
 
+  async function refreshOwnershipTransferInvite() {
+    const token = new URLSearchParams(window.location.search).get('token') || '';
+    if (!token) {
+      setOwnershipTransferInvite(null);
+      showError(new Error('Ownership transfer token is missing.'));
+      return;
+    }
+    try {
+      const data = await getCampaignOwnershipTransfer(token);
+      setOwnershipTransferInvite(data.invite);
+      setError('');
+    } catch (err) {
+      setOwnershipTransferInvite(null);
+      showError(err);
+    }
+  }
+
+  async function handleCreateOwnershipTransfer(campaign) {
+    const username = String(campaignOwnershipTransferDraft[campaign.id] || '').trim();
+    if (!username) return;
+    try {
+      const data = await createCampaignOwnershipTransfer(campaign.id, username);
+      setCampaignOwnershipTransferDraft((current) => ({ ...current, [campaign.id]: '' }));
+      setMessage(data.message || 'Ownership transfer invitation sent.');
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleRespondOwnershipTransfer(decision) {
+    const token = new URLSearchParams(window.location.search).get('token') || '';
+    if (!token) return;
+    try {
+      const data = await respondCampaignOwnershipTransfer(token, decision);
+      setMessage(data.message);
+      setError('');
+      setOwnershipTransferInvite(null);
+      await refreshCampaigns();
+      await refreshCurrentUser();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function refreshPublicForumSections() {
     try {
       const data = await listPublicForumSections();
       setPublicForumSections(data.sections);
-      setPublicForumOpenSections((current) => {
-        const next = { ...current };
-        for (const section of data.sections) {
-          if (next[section.slug] === undefined) next[section.slug] = true;
-        }
-        return next;
-      });
-      await Promise.all(data.sections.map((section) => refreshPublicForumThreads(section.slug)));
     } catch (err) {
       showError(err);
     }
@@ -957,10 +1023,6 @@ function App() {
     }
   }
 
-  function handleTogglePublicForumSection(sectionSlug) {
-    setPublicForumOpenSections((current) => ({ ...current, [sectionSlug]: !current[sectionSlug] }));
-  }
-
   function handleOpenPublicForumThreadModal(section) {
     if (!authUser) {
       showError(new Error('Sign in to create a public forum thread.'));
@@ -1001,6 +1063,7 @@ function App() {
       setError('');
       await refreshPublicForumThreads(publicForumNewThreadSection.slug);
       setPublicForumThread(data.thread);
+      window.history.pushState({}, '', `/forums/${encodeURIComponent(publicForumNewThreadSection.slug)}/threads/${data.thread.id}`);
       await refreshCurrentUser();
     } catch (err) {
       showError(err);
@@ -1793,7 +1856,8 @@ function App() {
           authUser={authUser}
           sections={publicForumSections}
           threadsBySection={publicForumThreadsBySection}
-          openSections={publicForumOpenSections}
+          sectionSlug={publicForumSectionSlug}
+          threadId={publicForumThreadId}
           selectedThread={publicForumThread}
           newThreadSection={publicForumNewThreadSection}
           threadDraft={publicForumThreadDraft}
@@ -1803,8 +1867,6 @@ function App() {
           portraitRefreshKey={portraitRefreshKey}
           onOpenAccount={handleOpenAccountModal}
           onLogout={handleLogout}
-          onToggleSection={handleTogglePublicForumSection}
-          onSelectThread={handleSelectPublicForumThread}
           onOpenNewThread={handleOpenPublicForumThreadModal}
           onCloseNewThread={() => setPublicForumNewThreadSection(null)}
           onThreadDraftChange={setPublicForumThreadDraft}
@@ -1872,6 +1934,24 @@ function App() {
         </section>
         <SiteFooter compact />
       </main>
+    );
+  }
+
+  if (isOwnershipTransferRoute) {
+    return (
+      <>
+        <OwnershipTransferPage
+          authUser={authUser}
+          invite={ownershipTransferInvite}
+          message={message}
+          error={error}
+          onOpenAccount={handleOpenAccountModal}
+          onLogout={handleLogout}
+          onRefresh={refreshOwnershipTransferInvite}
+          onRespond={handleRespondOwnershipTransfer}
+        />
+        {accountModals}
+      </>
     );
   }
 
@@ -1948,6 +2028,8 @@ function App() {
     const activeDashboardCampaign = dashboardModal
       ? campaigns.find((campaign) => Number(campaign.id) === Number(dashboardModal.campaignId))
       : null;
+    const ownedCampaigns = campaigns.filter((campaign) => campaign.role === 'owner');
+    const joinedCampaigns = campaigns.filter((campaign) => campaign.role !== 'owner');
 
     return (
       <main className="dashboard-page">
@@ -1970,41 +2052,19 @@ function App() {
             <button type="submit">Create campaign</button>
           </form>
 
-          <section className="campaign-list">
-            <h2>Your Campaigns</h2>
-            {campaigns.map((campaign) => (
-              <article className="campaign-card" key={campaign.id}>
-                <div className="campaign-card-header">
-                  <div>
-                    <h3>{campaign.name}</h3>
-                  </div>
-                  <div className="button-row campaign-action-buttons">
-                    {campaign.role === 'owner' && (
-                      <button type="button" onClick={() => openDashboardModal('members', campaign)}>Manage Members</button>
-                    )}
-                    <button type="button" onClick={() => openDashboardModal('maps', campaign)}>List Maps</button>
-                    {campaign.role === 'owner' && (
-                      <button type="button" onClick={() => openDashboardModal('add-map', campaign)}>Add Map</button>
-                    )}
-                    <a
-                      className="button"
-                      href={`/campaigns/${campaign.id}/forums`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Open Forums
-                    </a>
-                    <button type="button" onClick={() => openDashboardModal('cast', campaign)}>Manage the Cast</button>
-                    <button type="button" onClick={() => openDashboardModal('preview', campaign)}>Preview</button>
-                    {campaign.role === 'owner' && (
-                      <button type="button" onClick={() => openDashboardModal('permissions', campaign)}>Manage Permissions</button>
-                    )}
-                  </div>
-                </div>
-              </article>
-            ))}
-            {!campaigns.length && <p className="empty-state">Create a campaign to get started.</p>}
-          </section>
+          <CampaignDashboardSection
+            title="Campaigns I Run"
+            campaigns={ownedCampaigns}
+            emptyText="Create a campaign to get started."
+            onOpenDashboardModal={openDashboardModal}
+          />
+
+          <CampaignDashboardSection
+            title="Campaigns I Play In"
+            campaigns={joinedCampaigns}
+            emptyText="Campaigns you join will appear here."
+            onOpenDashboardModal={openDashboardModal}
+          />
         </section>
 
         {activeDashboardCampaign && (
@@ -2014,6 +2074,7 @@ function App() {
             cast={campaignCast[activeDashboardCampaign.id] || []}
             castDrafts={campaignCastDraft}
             memberDraft={campaignMemberDraft[activeDashboardCampaign.id] || ''}
+            ownershipTransferDraft={campaignOwnershipTransferDraft[activeDashboardCampaign.id] || ''}
             mapDraft={campaignMapDraft[activeDashboardCampaign.id] || {}}
             forumThreads={campaignForumThreads[activeDashboardCampaign.id] || []}
             forumDraft={campaignForumDraft[activeDashboardCampaign.id] || {}}
@@ -2022,6 +2083,8 @@ function App() {
             onClose={() => setDashboardModal(null)}
             onMemberDraftChange={(value) => setCampaignMemberDraft((current) => ({ ...current, [activeDashboardCampaign.id]: value }))}
             onInviteMember={() => handleInviteCampaignMember(activeDashboardCampaign.id)}
+            onOwnershipTransferDraftChange={(value) => setCampaignOwnershipTransferDraft((current) => ({ ...current, [activeDashboardCampaign.id]: value }))}
+            onCreateOwnershipTransfer={() => handleCreateOwnershipTransfer(activeDashboardCampaign)}
             onMapDraftChange={(patch) => setCampaignMapDraft((current) => ({
               ...current,
               [activeDashboardCampaign.id]: { ...(current[activeDashboardCampaign.id] || {}), ...patch }
@@ -2845,12 +2908,58 @@ function ContactPage({
   );
 }
 
+function OwnershipTransferPage({
+  authUser,
+  invite,
+  message,
+  error,
+  onOpenAccount,
+  onLogout,
+  onRefresh,
+  onRespond
+}) {
+  return (
+    <main className="dashboard-page ownership-transfer-page">
+      <SiteHeader
+        authUser={authUser}
+        title="Campaign Ownership Transfer"
+        subtitle={invite ? invite.campaignName : 'Invitation review'}
+        onOpenAccount={onOpenAccount}
+        onLogout={onLogout}
+        actions={<button type="button" onClick={onRefresh}>Refresh</button>}
+      />
+      <section className="dashboard-layout">
+        <section className="dashboard-create ownership-transfer-card">
+          {invite ? (
+            <>
+              <strong>{invite.campaignName}</strong>
+              <p>
+                {invite.currentOwnerDisplayName} invited you to become the owner of this campaign.
+                This invitation expires {formatDateTime(invite.expiresAt)}.
+              </p>
+              <div className="button-row">
+                <button type="button" onClick={() => onRespond('accept')}>Accept ownership</button>
+                <button type="button" onClick={() => onRespond('reject')}>Reject invitation</button>
+              </div>
+            </>
+          ) : (
+            <p>{error || 'Loading ownership transfer invitation...'}</p>
+          )}
+        </section>
+      </section>
+      {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
+      <SiteFooter />
+    </main>
+  );
+}
+
 function DashboardCampaignModal({
   type,
   campaign,
   cast,
   castDrafts,
   memberDraft,
+  ownershipTransferDraft,
   mapDraft,
   forumThreads,
   forumDraft,
@@ -2859,6 +2968,8 @@ function DashboardCampaignModal({
   onClose,
   onMemberDraftChange,
   onInviteMember,
+  onOwnershipTransferDraftChange,
+  onCreateOwnershipTransfer,
   onMapDraftChange,
   onCreateMap,
   onSetMapVisibility,
@@ -2878,6 +2989,8 @@ function DashboardCampaignModal({
     maps: 'List Maps',
     'add-map': 'Add Map',
     cast: 'Manage the Cast',
+    characters: 'List Characters',
+    'add-character': 'Add Character',
     preview: 'Preview',
     permissions: 'Manage Permissions'
   }[type] || campaign.name;
@@ -2952,7 +3065,7 @@ function DashboardCampaignModal({
           </div>
         )}
 
-        {type === 'cast' && (
+        {(type === 'cast' || type === 'characters' || type === 'add-character') && (
           <CampaignCastPanel
             campaign={campaign}
             cast={cast}
@@ -2999,6 +3112,18 @@ function DashboardCampaignModal({
                 onAssignThread={onAssignThread}
                 onSetThreadVisibility={onSetThreadVisibility}
               />
+            </section>
+            <section className="ownership-transfer-panel">
+              <h4>Transfer Ownership</h4>
+              <div className="inline-form">
+                <input
+                  value={ownershipTransferDraft}
+                  onChange={(event) => onOwnershipTransferDraftChange(event.target.value)}
+                  placeholder="New owner username"
+                />
+                <button type="button" onClick={onCreateOwnershipTransfer}>Send invite</button>
+              </div>
+              <small>The prospective owner receives an email and must accept before ownership changes.</small>
             </section>
           </div>
         )}
@@ -3063,6 +3188,58 @@ function DashboardMapList({ campaign, forumThreads, onSetMapVisibility, onAssign
       })}
       {!campaign.maps.length && <p>No maps available.</p>}
     </div>
+  );
+}
+
+function CampaignDashboardSection({ title, campaigns, emptyText, onOpenDashboardModal }) {
+  return (
+    <section className="campaign-list">
+      <h2>{title}</h2>
+      {campaigns.map((campaign) => (
+        <article className="campaign-card" key={campaign.id}>
+          <div className="campaign-card-header">
+            <div>
+              <h3>{campaign.name}</h3>
+              <p>{formatCount(campaign.mapCount, 'map')} · {formatCount(campaign.unreadForumCount, 'unread forum post')}</p>
+            </div>
+            <div className="button-row campaign-action-buttons smaller-button-text">
+              {campaign.role === 'owner' ? (
+                <>
+                  <button type="button" onClick={() => onOpenDashboardModal('members', campaign)}>Manage Members</button>
+                  <button type="button" onClick={() => onOpenDashboardModal('maps', campaign)}>List Maps</button>
+                  <button type="button" onClick={() => onOpenDashboardModal('add-map', campaign)}>Add Map</button>
+                  <a
+                    className="button no-underline"
+                    href={`/campaigns/${campaign.id}/forums`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open Forums
+                  </a>
+                  <button type="button" onClick={() => onOpenDashboardModal('cast', campaign)}>Manage the Cast</button>
+                  <button type="button" onClick={() => onOpenDashboardModal('permissions', campaign)}>Manage Permissions</button>
+                </>
+              ) : (
+                <>
+                  <button type="button" onClick={() => onOpenDashboardModal('maps', campaign)}>List Maps</button>
+                  <a
+                    className="button no-underline"
+                    href={`/campaigns/${campaign.id}/forums`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open Forums
+                  </a>
+                  <button type="button" onClick={() => onOpenDashboardModal('characters', campaign)}>List Characters</button>
+                  <button type="button" onClick={() => onOpenDashboardModal('add-character', campaign)}>Add Character</button>
+                </>
+              )}
+            </div>
+          </div>
+        </article>
+      ))}
+      {!campaigns.length && <p className="empty-state">{emptyText}</p>}
+    </section>
   );
 }
 
@@ -3760,6 +3937,7 @@ function ForumPage({
               setThreadPageSize(size);
               setThreadPage(1);
             }}
+            labelOnNewLine={1}
           />
         </aside>
 
@@ -3838,6 +4016,7 @@ function ForumPage({
                       setPostPageSize(size);
                       setPostPage(1);
                     }}
+                    labelOnNewLine={0}
                   />
                   {canPostInSelectedThread ? (
                     <form className="forum-reply-form" onSubmit={onCreatePost}>
@@ -4047,7 +4226,8 @@ function PaginationControls({
   page,
   pageSize,
   onPageChange,
-  onPageSizeChange
+  onPageSizeChange,
+  labelOnNewLine
 }) {
   if (!totalItems) return null;
 
@@ -4055,12 +4235,14 @@ function PaginationControls({
   const currentPage = Math.min(Math.max(Number(page) || 1, 1), pageCount);
   const start = totalItems ? ((currentPage - 1) * pageSize) + 1 : 0;
   const end = Math.min(currentPage * pageSize, totalItems);
+  const labelNewLine = labelOnNewLine ? "labelNewLine" : "";
+  const padPaginationTop = labelOnNewLine ? "pad-top-5" : "";
 
   return (
-    <div className="pagination-controls">
+    <div className={`pagination-controls ${labelNewLine}`}>
       <span>{label}: {start}-{end} of {totalItems}</span>
       <label>
-        <span>Show</span>
+        <span className="label-m-l-1">Show</span>
         <select
           value={pageSize}
           onChange={(event) => onPageSizeChange(Number(event.target.value))}
@@ -4070,7 +4252,7 @@ function PaginationControls({
           ))}
         </select>
       </label>
-      <div className="pagination-buttons">
+      <div className={`pagination-buttons ${padPaginationTop}`}>
         <button type="button" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage <= 1}>
           Previous
         </button>
@@ -4320,7 +4502,10 @@ function DiceRollList({ rolls }) {
       {rolls.map((roll) => (
         <article className="dice-roll-card" key={roll.id}>
           <header>
-            <strong>{roll.commandText}</strong>
+            <div>
+              {roll.result?.purpose && <strong>{roll.result.purpose}</strong>}
+              <small>{roll.commandText}</small>
+            </div>
             <span>{formatDateTime(roll.createdAt)}</span>
           </header>
           {roll.rollType === 'shadowrun' ? (
@@ -4365,7 +4550,8 @@ function PublicForumsPage({
   authUser,
   sections,
   threadsBySection,
-  openSections,
+  sectionSlug,
+  threadId,
   selectedThread,
   newThreadSection,
   threadDraft,
@@ -4375,8 +4561,6 @@ function PublicForumsPage({
   portraitRefreshKey,
   onOpenAccount,
   onLogout,
-  onToggleSection,
-  onSelectThread,
   onOpenNewThread,
   onCloseNewThread,
   onThreadDraftChange,
@@ -4391,10 +4575,14 @@ function PublicForumsPage({
   onDeletePost,
   onToggleSticky
 }) {
-  const [threadPagesBySection, setThreadPagesBySection] = useState({});
+  const [threadPage, setThreadPage] = useState(1);
   const [threadPageSize, setThreadPageSize] = useState(10);
   const [postPage, setPostPage] = useState(1);
   const [postPageSize, setPostPageSize] = useState(10);
+  const selectedSection = sectionSlug ? sections.find((section) => section.slug === sectionSlug) : null;
+  const activeSection = selectedSection || (sectionSlug ? { slug: sectionSlug, title: sectionSlug, description: '' } : null);
+  const sectionThreads = sectionSlug ? (threadsBySection[sectionSlug] || []) : [];
+  const pagedThreads = paginateItems(sectionThreads, threadPage, threadPageSize);
   const selectedPosts = selectedThread?.posts || [];
   const pagedPosts = paginateItems(selectedPosts, postPage, postPageSize);
 
@@ -4402,16 +4590,16 @@ function PublicForumsPage({
     setPostPage(1);
   }, [selectedThread?.id]);
 
-  function setSectionPage(sectionSlug, page) {
-    setThreadPagesBySection((current) => ({ ...current, [sectionSlug]: page }));
-  }
+  useEffect(() => {
+    setThreadPage(1);
+  }, [sectionSlug]);
 
   return (
     <main className="forum-page public-forums-page">
       <SiteHeader
         authUser={authUser}
-        title="Community Forums"
-        subtitle="Public PBPHUD discussion"
+        title={threadId && selectedThread ? selectedThread.title : activeSection?.title || 'Community Forums'}
+        subtitle={threadId && selectedThread ? selectedThread.sectionTitle : activeSection?.description || 'Public PBPHUD discussion'}
         onOpenAccount={onOpenAccount}
         onLogout={onLogout}
       />
@@ -4419,82 +4607,73 @@ function PublicForumsPage({
       <section className="public-forum-layout traditional-forum-layout">
         <section className="public-forum-card">
           <div className="forum-panel-header">
-            <strong>Forums</strong>
-            <small>Anyone can read. Sign in to post.</small>
+            <div>
+              <strong>{threadId ? 'Thread' : activeSection ? 'Threads' : 'Forums'}</strong>
+              <small>Anyone can read. Sign in to post.</small>
+            </div>
+            {(sectionSlug || threadId) && (
+              <a className="button no-underline" href={threadId ? `/forums/${selectedThread?.sectionSlug || sectionSlug}` : '/forums'}>
+                Back
+              </a>
+            )}
           </div>
-          <div className="traditional-forum-list public-section-list accordion-forum-list">
-            {sections.map((section) => (
-              <section className="subforum-accordion" key={section.slug}>
-                <div className="traditional-forum-row subforum-header">
-                  <button
-                    type="button"
-                    className="subforum-toggle"
-                    onClick={() => onToggleSection(section.slug)}
-                    aria-expanded={openSections[section.slug] !== false}
-                  >
-                    <span className="accordion-indicator">{openSections[section.slug] === false ? '+' : '-'}</span>
-                    <span>
-                      <strong>{section.title}</strong>
-                      <small>{section.description}</small>
-                    </span>
-                  </button>
+          {!activeSection && !threadId && (
+            <div className="traditional-forum-list public-section-list">
+              {sections.map((section) => (
+                <a className="traditional-forum-row public-category-row" key={section.slug} href={`/forums/${encodeURIComponent(section.slug)}`}>
+                  <span>
+                    <strong>{section.title}</strong>
+                    <small>{section.description}</small>
+                  </span>
                   <span>{formatCount(section.threadCount, 'thread')}</span>
                   <span>{formatCount(section.postCount, 'post')}</span>
-                  <button type="button" onClick={() => onOpenNewThread(section)}>
-                    New post
-                  </button>
-                </div>
+                  <span>{section.latestPostAt ? formatDateTime(section.latestPostAt) : 'No posts yet'}</span>
+                </a>
+              ))}
+              {!sections.length && <p className="empty-subforum">No forum categories yet.</p>}
+            </div>
+          )}
 
-                {openSections[section.slug] !== false && (
-                  <div className="traditional-thread-list accordion-thread-list">
-                    {(() => {
-                      const sectionThreads = threadsBySection[section.slug] || [];
-                      const pagedThreads = paginateItems(sectionThreads, threadPagesBySection[section.slug] || 1, threadPageSize);
-                      return (
-                        <>
-                          {pagedThreads.items.map((thread) => (
-                            <button
-                              type="button"
-                              key={thread.id}
-                              className={`traditional-thread-row ${selectedThread?.id === thread.id ? 'selected' : ''}`}
-                              onClick={() => onSelectThread(thread.id)}
-                            >
-                              <span>
-                                <strong>{thread.sticky && <span className="sticky-pill">Sticky</span>} {thread.title}</strong>
-                                <ThreadAuthorMeta thread={thread} />
-                              </span>
-                              <span>{formatCount(thread.postCount, 'post')}</span>
-                              <span>{thread.latestPostAt ? formatDateTime(thread.latestPostAt) : 'No posts yet'}</span>
-                            </button>
-                          ))}
-                          {!sectionThreads.length && (
-                            <p className="empty-subforum">No threads in this forum yet.</p>
-                          )}
-                          <PaginationControls
-                            label="Threads"
-                            totalItems={sectionThreads.length}
-                            page={pagedThreads.currentPage}
-                            pageSize={threadPageSize}
-                            onPageChange={(page) => setSectionPage(section.slug, page)}
-                            onPageSizeChange={(size) => {
-                              setThreadPageSize(size);
-                              setThreadPagesBySection({});
-                            }}
-                          />
-                        </>
-                      );
-                    })()}
-                  </div>
-                )}
-              </section>
-            ))}
-          </div>
-        </section>
+          {activeSection && !threadId && (
+            <div className="traditional-thread-list">
+              <div className="public-section-actions">
+                <button type="button" onClick={() => onOpenNewThread(activeSection)}>New post</button>
+              </div>
+              {pagedThreads.items.map((thread) => (
+                <a
+                  key={thread.id}
+                  className="traditional-thread-row"
+                  href={`/forums/${encodeURIComponent(activeSection.slug)}/threads/${thread.id}`}
+                >
+                  <span>
+                    <strong>{thread.sticky && <span className="sticky-pill">Sticky</span>} {thread.title}</strong>
+                    <ThreadAuthorMeta thread={thread} />
+                  </span>
+                  <span>{formatCount(thread.postCount, 'post')}</span>
+                  <span>{thread.latestPostAt ? formatDateTime(thread.latestPostAt) : 'No posts yet'}</span>
+                </a>
+              ))}
+              {!sectionThreads.length && <p className="empty-subforum">No threads in this forum yet.</p>}
+              <PaginationControls
+                label="Threads"
+                totalItems={sectionThreads.length}
+                page={pagedThreads.currentPage}
+                pageSize={threadPageSize}
+                onPageChange={setThreadPage}
+                onPageSizeChange={(size) => {
+                  setThreadPageSize(size);
+                  setThreadPage(1);
+                }}
+                labelOnNewLine={1}
+              />
+            </div>
+          )}
 
-        <section className="forum-main-panel public-forum-card">
-          {selectedThread ? (
+          {threadId && (
             <>
-              <header className="forum-thread-header">
+              {selectedThread ? (
+              <>
+                <header className="forum-thread-header">
                 <div>
                   <h2>{selectedThread.title}</h2>
                   <p>{selectedThread.sectionTitle || 'Public forum thread'} · {formatCount(selectedThread.postCount, 'post')}</p>
@@ -4505,7 +4684,7 @@ function PublicForumsPage({
                   </button>
                 )}
               </header>
-              <div className="forum-post-list">
+                <div className="forum-post-list">
                 {pagedPosts.items.map((post) => (
                   <ForumPostArticle
                     key={post.id}
@@ -4523,8 +4702,8 @@ function PublicForumsPage({
                     onDeletePost={onDeletePost}
                   />
                 ))}
-              </div>
-              <PaginationControls
+                </div>
+                <PaginationControls
                 label="Posts"
                 totalItems={selectedPosts.length}
                 page={pagedPosts.currentPage}
@@ -4534,8 +4713,9 @@ function PublicForumsPage({
                   setPostPageSize(size);
                   setPostPage(1);
                 }}
+                labelOnNewLine={0}
               />
-              {authUser ? (
+                {authUser ? (
                 <form className="forum-reply-form" onSubmit={onCreatePost}>
                   <BBCodeEditor
                     value={replyDraft}
@@ -4548,12 +4728,13 @@ function PublicForumsPage({
               ) : (
                 <p className="auth-required-note"><a href="/auth">Sign in</a> or <a href="/auth?mode=register">register</a> to reply.</p>
               )}
+              </>
+              ) : (
+                <div className="empty-state">Loading thread...</div>
+              )}
             </>
-          ) : (
-            <div className="empty-state">Select a thread to read it.</div>
           )}
         </section>
-
       </section>
 
       {newThreadSection && (
@@ -4715,6 +4896,7 @@ function MapForumPanel({
                 setPostPageSize(size);
                 setPostPage(1);
               }}
+              labelOnNewLine={0}
             />
             <footer className="forum-reply-actions">
               <button type="button" onClick={() => setReplyModalOpen(true)} disabled={!selectedThread.permissions?.canPost}>
@@ -4761,6 +4943,19 @@ function MapForumPanel({
 
 function BBCodeEditor({ value, onChange, placeholder, postIdentities = [], portraitRefreshKey = 0 }) {
   const textareaRef = useRef(null);
+  const [diceModalOpen, setDiceModalOpen] = useState(false);
+  const [shadowrunDiceModalOpen, setShadowrunDiceModalOpen] = useState(false);
+  const [diceDraft, setDiceDraft] = useState({
+    diceCount: '1',
+    dieSize: '20',
+    modifier: '0',
+    purpose: ''
+  });
+  const [shadowrunDiceDraft, setShadowrunDiceDraft] = useState({
+    diceCount: '12',
+    useEdge: false,
+    purpose: ''
+  });
 
   function wrapSelection(openTag, closeTag = null, fallback = '') {
     const textarea = textareaRef.current;
@@ -4840,6 +5035,36 @@ function BBCodeEditor({ value, onChange, placeholder, postIdentities = [], portr
     });
   }
 
+  function insertDiceRoll() {
+    const diceCount = clampNumber(diceDraft.diceCount, 1, 100, 1);
+    const dieSize = clampNumber(diceDraft.dieSize, 2, 1000, 20);
+    const modifier = clampNumber(diceDraft.modifier, -10000, 10000, 0);
+    const purpose = diceDraft.purpose.trim();
+    if (!purpose) {
+      window.alert('Enter what this roll is for.');
+      return;
+    }
+    insertInlineCommand(
+      `[roll dice=${diceCount} size=${dieSize} bonus=${modifier} for=${encodeBbcodeAttribute(purpose)}]`
+    );
+    setDiceDraft({ diceCount: '1', dieSize: '20', modifier: '0', purpose: '' });
+    setDiceModalOpen(false);
+  }
+
+  function insertShadowrunDiceRoll() {
+    const diceCount = clampNumber(shadowrunDiceDraft.diceCount, 1, 100, 12);
+    const purpose = shadowrunDiceDraft.purpose.trim();
+    if (!purpose) {
+      window.alert('Enter what this roll is for.');
+      return;
+    }
+    insertInlineCommand(
+      `[sr dice=${diceCount} edge=${shadowrunDiceDraft.useEdge ? 'true' : 'false'} for=${encodeBbcodeAttribute(purpose)}]`
+    );
+    setShadowrunDiceDraft({ diceCount: '12', useEdge: false, purpose: '' });
+    setShadowrunDiceModalOpen(false);
+  }
+
   function insertCharacterBlock(identity) {
     const attrs = [
       ['id', identity.id],
@@ -4901,10 +5126,113 @@ function BBCodeEditor({ value, onChange, placeholder, postIdentities = [], portr
         <button type="button" onClick={insertImage}>Image</button>
         <button type="button" onClick={insertCenteredImage}>Image Center</button>
         <button type="button" className="post-as-tool" onClick={insertPostAsBlock}>Post as</button>
-        <button type="button" className="dice-tool" onClick={() => insertInlineCommand('/roll 1d20+0')}>/roll d20</button>
-        <button type="button" className="dice-tool" onClick={() => insertInlineCommand('/sr 12')}>/sr dice pool</button>
-        <button type="button" className="dice-tool" onClick={() => insertInlineCommand('/sr 12 edge')}>/sr edge</button>
+        <button type="button" className="dice-tool" onClick={() => setDiceModalOpen(true)}>Dice Roll</button>
+        <button type="button" className="dice-tool" onClick={() => setShadowrunDiceModalOpen(true)}>Shadowrun Roll</button>
       </div>
+      {diceModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal dice-roll-modal" role="dialog" aria-modal="true" aria-label="Insert dice roll">
+            <header>
+              <div>
+                <strong>Dice Roll</strong>
+                <small>Add a purpose so the roll remains meaningful after edits.</small>
+              </div>
+              <button type="button" onClick={() => setDiceModalOpen(false)}>Cancel</button>
+            </header>
+            <div className="dice-roll-form">
+              <label>
+                Dice
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={diceDraft.diceCount}
+                  onChange={(event) => setDiceDraft((current) => ({ ...current, diceCount: event.target.value }))}
+                />
+              </label>
+              <label>
+                Size
+                <input
+                  type="number"
+                  min="2"
+                  max="1000"
+                  value={diceDraft.dieSize}
+                  onChange={(event) => setDiceDraft((current) => ({ ...current, dieSize: event.target.value }))}
+                />
+              </label>
+              <label>
+                Bonus/Penalty
+                <input
+                  type="number"
+                  min="-10000"
+                  max="10000"
+                  value={diceDraft.modifier}
+                  onChange={(event) => setDiceDraft((current) => ({ ...current, modifier: event.target.value }))}
+                />
+              </label>
+              <label className="dice-purpose-field">
+                Roll is for
+                <input
+                  value={diceDraft.purpose}
+                  onChange={(event) => setDiceDraft((current) => ({ ...current, purpose: event.target.value }))}
+                  placeholder="Attack, lockpicking, perception..."
+                  maxLength={160}
+                />
+              </label>
+              <div className="button-row">
+                <button type="button" onClick={insertDiceRoll}>Insert roll</button>
+                <button type="button" onClick={() => setDiceModalOpen(false)}>Cancel</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+      {shadowrunDiceModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="confirm-modal dice-roll-modal" role="dialog" aria-modal="true" aria-label="Insert Shadowrun dice roll">
+            <header>
+              <div>
+                <strong>Shadowrun Roll</strong>
+                <small>Roll d6s, count hits, and optionally use Edge.</small>
+              </div>
+              <button type="button" onClick={() => setShadowrunDiceModalOpen(false)}>Cancel</button>
+            </header>
+            <div className="dice-roll-form shadowrun-dice-roll-form">
+              <label>
+                d6s
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={shadowrunDiceDraft.diceCount}
+                  onChange={(event) => setShadowrunDiceDraft((current) => ({ ...current, diceCount: event.target.value }))}
+                />
+              </label>
+              <label className="checkbox-row shadowrun-edge-field">
+                <input
+                  type="checkbox"
+                  checked={shadowrunDiceDraft.useEdge}
+                  onChange={(event) => setShadowrunDiceDraft((current) => ({ ...current, useEdge: event.target.checked }))}
+                />
+                Use Edge
+              </label>
+              <label className="dice-purpose-field">
+                Roll is for
+                <input
+                  value={shadowrunDiceDraft.purpose}
+                  onChange={(event) => setShadowrunDiceDraft((current) => ({ ...current, purpose: event.target.value }))}
+                  placeholder="Sneaking, spellcasting, defense..."
+                  maxLength={160}
+                />
+              </label>
+              <div className="button-row">
+                <button type="button" onClick={insertShadowrunDiceRoll}>Insert Shadowrun roll</button>
+                <button type="button" onClick={() => setShadowrunDiceModalOpen(false)}>Cancel</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
       {!!postIdentities.length && (
         <div className="character-bbcode-tools" aria-label="Character BBCode blocks">
           <strong>Character/NPC block</strong>
@@ -4929,9 +5257,10 @@ function BBCodeEditor({ value, onChange, placeholder, postIdentities = [], portr
       )}
       <div className="dice-syntax-help">
         <strong>Dice syntax</strong>
-        <span><code>/roll 2d6+3</code> rolls standard dice.</span>
-        <span><code>/sr 12</code> rolls 12 Shadowrun d6s and counts 5s, 6s, and 1s.</span>
-        <span><code>/sr 12 edge</code> uses Edge with exploding 6s.</span>
+        <span><code>[roll dice=2 size=6 bonus=3 for=Lockpicking]</code> rolls standard dice.</span>
+        <span><code>[sr dice=12 edge=true for=Sneaking]</code> rolls Shadowrun d6s.</span>
+        <span><code>/roll 2d6+3 for Lockpicking</code> rolls standard dice.</span>
+        <span><code>/sr 12 edge for Sneaking</code> rolls Shadowrun d6s.</span>
         {!!postIdentities.length && <span>Use a character/NPC button to insert an in-character BBCode block inside the post.</span>}
       </div>
       <textarea
@@ -4984,11 +5313,34 @@ function renderBbcode(input, portraitRefreshKey = 0) {
     .replace(/\[url=(https?:\/\/[^\s\]]+?)\]([\s\S]*?)\[\/url\]/gi, '<a href="$1" target="_blank" rel="noopener noreferrer">$2</a>')
     .replace(/\[img=center\](https?:\/\/[^\s[]+?)\[\/img\]/gi, '<img class="bbcode-image-center" src="$1" alt="" loading="lazy" />')
     .replace(/\[img\](https?:\/\/[^\s[]+?)\[\/img\]/gi, '<img src="$1" alt="" loading="lazy" />');
+  html = renderRollBbcode(html);
   html = renderCharacterBbcode(html, portraitRefreshKey);
   html = renderBbcodeLists(html);
   html = html
     .replace(/\r?\n/g, '<br />');
   return html;
+}
+
+function renderRollBbcode(html) {
+  return html
+    .replace(/\[roll\s+([^\]]+)\]/gi, (_match, attrText) => {
+      const attrs = parseBbcodeAttributes(attrText);
+      const diceExpression = String(attrs.dice || '').match(/^(\d{1,3})d(\d{1,4})$/i);
+      const diceCount = diceExpression?.[1] || attrs.dice || attrs.count || attrs.amount || '1';
+      const dieSize = diceExpression?.[2] || attrs.size || attrs.sides || attrs.die || '20';
+      const modifier = attrs.bonus || attrs.modifier || attrs.mod || (attrs.penalty ? `-${attrs.penalty}` : '0');
+      const purpose = attrs.for || attrs.reason || attrs.purpose || attrs.label || 'Dice roll';
+      const modifierNumber = Number.parseInt(modifier, 10) || 0;
+      const modifierText = modifierNumber ? `${modifierNumber > 0 ? '+' : ''}${modifierNumber}` : '';
+      return `<span class="bbcode-roll-preview">${escapeHtml(purpose)}: ${escapeHtml(diceCount)}d${escapeHtml(dieSize)}${escapeHtml(modifierText)}</span>`;
+    })
+    .replace(/\[sr\s+([^\]]+)\]/gi, (_match, attrText) => {
+      const attrs = parseBbcodeAttributes(attrText);
+      const diceCount = attrs.dice || attrs.count || attrs.amount || attrs.pool || '12';
+      const purpose = attrs.for || attrs.reason || attrs.purpose || attrs.label || 'Shadowrun roll';
+      const useEdge = ['1', 'true', 'yes', 'y', 'edge'].includes(String(attrs.edge || '').toLowerCase());
+      return `<span class="bbcode-roll-preview">${escapeHtml(purpose)}: ${escapeHtml(diceCount)}d6${useEdge ? ' with Edge' : ''}</span>`;
+    });
 }
 
 function renderCharacterBbcode(html, portraitRefreshKey = 0) {

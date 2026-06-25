@@ -1,7 +1,10 @@
 import crypto from 'node:crypto';
 import express from 'express';
+import nodemailer from 'nodemailer';
 import { z } from 'zod';
 import { query, transaction } from '../db.js';
+import { config } from '../env.js';
+import { createToken, tokenHash } from '../auth.js';
 import {
   enqueueForumThreadNotifications,
   sendForumThreadTestNotification
@@ -20,6 +23,14 @@ const campaignSchema = z.object({
 
 const inviteSchema = z.object({
   userId: z.string().trim().min(1).max(191)
+});
+
+const ownershipTransferSchema = z.object({
+  username: z.string().trim().min(1).max(320)
+});
+
+const ownershipTransferResponseSchema = z.object({
+  decision: z.enum(['accept', 'reject'])
 });
 
 const castSchema = z.object({
@@ -199,6 +210,161 @@ campaignsRouter.post('/:campaignId/members', async (req, res, next) => {
     await ensureCampaignPlayerCastEntries(campaign.id, campaign.owner_user_id);
     await subscribeUserToCampaignThreadsIfEnabled(campaign.id, body.userId);
     res.json({ members: await loadCampaignMembers(campaign.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.post('/:campaignId/ownership-transfer', async (req, res, next) => {
+  try {
+    const body = validate(ownershipTransferSchema, req.body);
+    const campaign = await loadOwnedCampaign(req.params.campaignId, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    const targetUser = await findUserByUsername(body.username);
+    if (!targetUser) {
+      res.status(404).json({ error: 'No user found with that username' });
+      return;
+    }
+    const invitedOwnerUserId = userPublicId(targetUser);
+    if (invitedOwnerUserId === campaign.owner_user_id) {
+      res.status(400).json({ error: 'That user already owns this campaign' });
+      return;
+    }
+
+    const token = createToken();
+    const expiresAt = dateDaysFromNow(7);
+    await transaction(async (connection) => {
+      await connection.query(
+        `UPDATE campaign_ownership_transfer_invites
+         SET status = 'superseded', responded_at = CURRENT_TIMESTAMP
+         WHERE campaign_id = ? AND status = 'pending'`,
+        [campaign.id]
+      );
+      await connection.query(
+        `INSERT INTO campaign_ownership_transfer_invites (
+           campaign_id, current_owner_user_id, invited_owner_user_id, token_hash, expires_at
+         )
+         VALUES (?, ?, ?, ?, ?)`,
+        [campaign.id, campaign.owner_user_id, invitedOwnerUserId, tokenHash(token), expiresAt]
+      );
+    });
+
+    await sendOwnershipTransferInviteEmail({
+      campaign,
+      currentOwner: req.user,
+      invitedOwner: targetUser,
+      token,
+      expiresAt
+    });
+
+    res.status(201).json({
+      message: `Ownership transfer invitation sent to ${targetUser.display_name || targetUser.email}.`
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.get('/ownership-transfer/:token', async (req, res, next) => {
+  try {
+    const invite = await loadOwnershipTransferInvite(req.params.token);
+    if (!invite) {
+      res.status(404).json({ error: 'Ownership transfer invitation not found' });
+      return;
+    }
+    if (invite.invitedOwnerUserId !== userPublicId(req.user)) {
+      res.status(403).json({ error: 'This ownership transfer invitation is for another account' });
+      return;
+    }
+    if (invite.status !== 'pending' || new Date(invite.expiresAt).getTime() <= Date.now()) {
+      res.status(410).json({ error: 'This ownership transfer invitation is no longer active' });
+      return;
+    }
+
+    res.json({ invite: formatOwnershipTransferInvite(invite) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.post('/ownership-transfer/:token/respond', async (req, res, next) => {
+  try {
+    const body = validate(ownershipTransferResponseSchema, req.body);
+    const invite = await loadOwnershipTransferInvite(req.params.token);
+    if (!invite) {
+      res.status(404).json({ error: 'Ownership transfer invitation not found' });
+      return;
+    }
+    if (invite.invitedOwnerUserId !== userPublicId(req.user)) {
+      res.status(403).json({ error: 'This ownership transfer invitation is for another account' });
+      return;
+    }
+    if (invite.status !== 'pending' || new Date(invite.expiresAt).getTime() <= Date.now()) {
+      res.status(410).json({ error: 'This ownership transfer invitation is no longer active' });
+      return;
+    }
+
+    const accepted = body.decision === 'accept';
+    await transaction(async (connection) => {
+      const rows = await connection.query(
+        `SELECT id, owner_user_id AS ownerUserId
+         FROM campaigns
+         WHERE id = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [invite.campaignId]
+      );
+      const campaign = rows[0];
+      if (!campaign || campaign.ownerUserId !== invite.currentOwnerUserId) {
+        const error = new Error('This ownership transfer invitation is no longer active');
+        error.status = 410;
+        throw error;
+      }
+
+      if (accepted) {
+        await connection.query(
+          `UPDATE campaigns SET owner_user_id = ? WHERE id = ?`,
+          [invite.invitedOwnerUserId, invite.campaignId]
+        );
+        await connection.query(
+          `UPDATE maps
+           SET owner_user_id = ?
+           WHERE campaign_id = ? AND owner_user_id = ?`,
+          [invite.invitedOwnerUserId, invite.campaignId, invite.currentOwnerUserId]
+        );
+        await connection.query(
+          `INSERT INTO campaign_members (campaign_id, user_id)
+           VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
+          [invite.campaignId, invite.currentOwnerUserId]
+        );
+        await connection.query(
+          `DELETE FROM campaign_members WHERE campaign_id = ? AND user_id = ?`,
+          [invite.campaignId, invite.invitedOwnerUserId]
+        );
+      }
+
+      await connection.query(
+        `UPDATE campaign_ownership_transfer_invites
+         SET status = ?, responded_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [accepted ? 'accepted' : 'rejected', invite.id]
+      );
+    });
+
+    await ensureCampaignPlayerCastEntries(invite.campaignId, accepted ? invite.invitedOwnerUserId : invite.currentOwnerUserId);
+    await sendOwnershipTransferResponseEmail({ invite, accepted });
+
+    res.json({
+      accepted,
+      message: accepted
+        ? `You are now the owner of ${invite.campaignName}.`
+        : `You rejected ownership of ${invite.campaignName}.`
+    });
   } catch (error) {
     next(error);
   }
@@ -896,6 +1062,127 @@ async function loadOwnedCampaign(campaignId, user) {
   return rows[0] ?? null;
 }
 
+async function findUserByUsername(username) {
+  const displayRows = await query(
+    `SELECT id, email, display_name
+     FROM users
+     WHERE LOWER(display_name) = LOWER(?)
+     ORDER BY id
+     LIMIT 2`,
+    [username]
+  );
+  if (displayRows.length === 1) return displayRows[0];
+  if (displayRows.length > 1) {
+    const error = new Error('Multiple users have that display name. Use their email address instead.');
+    error.status = 409;
+    throw error;
+  }
+
+  const emailRows = await query(
+    `SELECT id, email, display_name
+     FROM users
+     WHERE LOWER(email) = LOWER(?)
+     LIMIT 1`,
+    [username]
+  );
+  return emailRows[0] ?? null;
+}
+
+async function loadOwnershipTransferInvite(token) {
+  const rows = await query(
+    `SELECT
+       invite.id,
+       invite.campaign_id AS campaignId,
+       invite.current_owner_user_id AS currentOwnerUserId,
+       invite.invited_owner_user_id AS invitedOwnerUserId,
+       invite.status,
+       invite.expires_at AS expiresAt,
+       invite.responded_at AS respondedAt,
+       invite.created_at AS createdAt,
+       campaign.name AS campaignName,
+       current_owner.email AS currentOwnerEmail,
+       current_owner.display_name AS currentOwnerDisplayName,
+       invited_owner.email AS invitedOwnerEmail,
+       invited_owner.display_name AS invitedOwnerDisplayName
+     FROM campaign_ownership_transfer_invites invite
+     INNER JOIN campaigns campaign ON campaign.id = invite.campaign_id
+     LEFT JOIN users current_owner
+       ON invite.current_owner_user_id = CONCAT('user:', current_owner.id)
+     LEFT JOIN users invited_owner
+       ON invite.invited_owner_user_id = CONCAT('user:', invited_owner.id)
+     WHERE invite.token_hash = ?
+     LIMIT 1`,
+    [tokenHash(token)]
+  );
+  return rows[0] ?? null;
+}
+
+function formatOwnershipTransferInvite(invite) {
+  return {
+    id: Number(invite.id),
+    campaignId: Number(invite.campaignId),
+    campaignName: invite.campaignName,
+    currentOwnerDisplayName: invite.currentOwnerDisplayName || invite.currentOwnerUserId,
+    invitedOwnerDisplayName: invite.invitedOwnerDisplayName || invite.invitedOwnerUserId,
+    expiresAt: invite.expiresAt,
+    createdAt: invite.createdAt
+  };
+}
+
+async function sendOwnershipTransferInviteEmail({ campaign, currentOwner, invitedOwner, token, expiresAt }) {
+  const transferUrl = `${config.clientOrigin}/campaign-ownership-transfer?token=${encodeURIComponent(token)}`;
+  const message = {
+    from: config.email.from,
+    to: invitedOwner.email,
+    subject: `Campaign ownership transfer invitation: ${campaign.name}`,
+    text: [
+      `Hi ${invitedOwner.display_name || invitedOwner.email},`,
+      '',
+      `${currentOwner.display_name || currentOwner.email} invited you to become the owner of "${campaign.name}".`,
+      '',
+      `Accept or reject the invitation here: ${transferUrl}`,
+      '',
+      `This invitation expires on ${new Date(expiresAt).toLocaleString()}.`
+    ].join('\n'),
+    html: `
+      <p>Hi ${escapeHtml(invitedOwner.display_name || invitedOwner.email)},</p>
+      <p>${escapeHtml(currentOwner.display_name || currentOwner.email)} invited you to become the owner of <strong>${escapeHtml(campaign.name)}</strong>.</p>
+      <p><a href="${escapeHtml(transferUrl)}">Accept or reject the invitation</a></p>
+      <p>This invitation expires on ${escapeHtml(new Date(expiresAt).toLocaleString())}.</p>
+    `
+  };
+  await sendCampaignOwnershipEmail(message, transferUrl);
+}
+
+async function sendOwnershipTransferResponseEmail({ invite, accepted }) {
+  if (!invite.currentOwnerEmail) return;
+  const message = {
+    from: config.email.from,
+    to: invite.currentOwnerEmail,
+    subject: `Campaign ownership transfer ${accepted ? 'accepted' : 'rejected'}: ${invite.campaignName}`,
+    text: [
+      `Hi ${invite.currentOwnerDisplayName || invite.currentOwnerEmail},`,
+      '',
+      `${invite.invitedOwnerDisplayName || invite.invitedOwnerEmail || invite.invitedOwnerUserId} ${accepted ? 'accepted' : 'rejected'} your invitation to own "${invite.campaignName}".`,
+      accepted ? 'Ownership has been transferred.' : 'Ownership has not changed.'
+    ].join('\n'),
+    html: `
+      <p>Hi ${escapeHtml(invite.currentOwnerDisplayName || invite.currentOwnerEmail)},</p>
+      <p>${escapeHtml(invite.invitedOwnerDisplayName || invite.invitedOwnerEmail || invite.invitedOwnerUserId)} ${accepted ? 'accepted' : 'rejected'} your invitation to own <strong>${escapeHtml(invite.campaignName)}</strong>.</p>
+      <p>${accepted ? 'Ownership has been transferred.' : 'Ownership has not changed.'}</p>
+    `
+  };
+  await sendCampaignOwnershipEmail(message);
+}
+
+async function sendCampaignOwnershipEmail(message, fallbackUrl = '') {
+  if (!config.email.smtp.auth.user || !config.email.smtp.auth.pass) {
+    console.log(`Campaign ownership email to ${message.to}: ${message.subject}${fallbackUrl ? ` ${fallbackUrl}` : ''}`);
+    return;
+  }
+  await nodemailer.createTransport(config.email.smtp).sendMail(message);
+}
+
 async function loadAccessibleCampaign(campaignId, user) {
   const viewerUserId = userPublicId(user);
   const rows = await query(
@@ -1229,6 +1516,10 @@ function castTypeLabel(type) {
   return 'Character';
 }
 
+function dateDaysFromNow(days) {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replaceAll('&', '&amp;')
@@ -1344,66 +1635,171 @@ function resolveDiceRolls(body) {
   const rolls = [];
   const text = String(body || '');
 
-  for (const match of text.matchAll(/(^|\s)\/roll\s+(\d{1,3})d(\d{1,3})(?:\s*([+-])\s*(\d{1,4}))?/gi)) {
+  for (const match of text.matchAll(/\[roll\s+([^\]]+)\]/gi)) {
     if (rolls.length >= 20) break;
-    const diceCount = clampInteger(match[2], 1, 100);
-    const dieSize = clampInteger(match[3], 2, 1000);
-    const modifier = match[5] ? clampInteger(match[5], 0, 10000) * (match[4] === '-' ? -1 : 1) : 0;
-    const dice = Array.from({ length: diceCount }, () => crypto.randomInt(1, dieSize + 1));
-    const subtotal = dice.reduce((sum, value) => sum + value, 0);
+    const attrs = parseBbcodeAttributes(match[1]);
+    const diceExpression = String(attrs.dice || '').match(/^(\d{1,3})d(\d{1,4})$/i);
     rolls.push({
-      rollType: 'standard',
-      commandText: match[0].trim(),
-      result: {
-        diceCount,
-        dieSize,
-        modifier,
-        dice,
-        subtotal,
-        total: subtotal + modifier
-      }
+      ...resolveStandardRoll({
+        diceCount: diceExpression ? diceExpression[1] : readRollAttribute(attrs, ['dice', 'count', 'amount'], 1),
+        dieSize: diceExpression ? diceExpression[2] : readRollAttribute(attrs, ['size', 'sides', 'die'], 20),
+        modifier: readRollModifier(attrs),
+        purpose: readRollPurpose(attrs),
+        commandText: match[0]
+      }),
+      index: match.index
     });
   }
 
-  for (const match of text.matchAll(/(^|\s)\/(?:sr|shadowrun)\s+(\d{1,3})(?:\s+(edge))?/gi)) {
+  for (const match of text.matchAll(/\[sr\s+([^\]]+)\]/gi)) {
     if (rolls.length >= 20) break;
-    const diceCount = clampInteger(match[2], 1, 100);
-    const useEdge = Boolean(match[3]);
-    const dice = Array.from({ length: diceCount }, () => crypto.randomInt(1, 7));
-    const edgeDice = [];
-    if (useEdge) {
-      let exploding = dice.filter((value) => value === 6).length;
-      while (exploding > 0 && dice.length + edgeDice.length < 300) {
-        exploding -= 1;
-        const next = crypto.randomInt(1, 7);
-        edgeDice.push(next);
-        if (next === 6) exploding += 1;
-      }
+    const attrs = parseBbcodeAttributes(match[1]);
+    rolls.push({
+      ...resolveShadowrunRoll({
+        diceCount: readRollAttribute(attrs, ['dice', 'count', 'amount', 'pool'], 12),
+        useEdge: readBooleanRollAttribute(attrs, ['edge', 'useedge']),
+        purpose: readRollPurpose(attrs),
+        commandText: match[0]
+      }),
+      index: match.index
+    });
+  }
+
+  for (const match of text.matchAll(/(^|\s)\/roll\s+(\d{1,3})d(\d{1,3})(?:\s*([+-])\s*(\d{1,4}))?(?:\s+(?:for|reason|purpose):?\s+([^\r\n]+))?/gi)) {
+    if (rolls.length >= 20) break;
+    const purpose = sanitizeRollPurpose(match[6]);
+    if (!purpose) throwRollPurposeError('/roll');
+    rolls.push({
+      ...resolveStandardRoll({
+        diceCount: clampInteger(match[2], 1, 100),
+        dieSize: clampInteger(match[3], 2, 1000),
+        modifier: match[5] ? clampInteger(match[5], 0, 10000) * (match[4] === '-' ? -1 : 1) : 0,
+        purpose,
+        commandText: match[0].trim()
+      }),
+      index: (match.index || 0) + match[1].length
+    });
+  }
+
+  for (const match of text.matchAll(/(^|\s)\/(?:sr|shadowrun)\s+(\d{1,3})(?:\s+(edge))?(?:\s+(?:for|reason|purpose):?\s+([^\r\n]+))?/gi)) {
+    if (rolls.length >= 20) break;
+    const purpose = sanitizeRollPurpose(match[4]);
+    if (!purpose) throwRollPurposeError('/sr');
+    rolls.push({
+      ...resolveShadowrunRoll({
+        diceCount: match[2],
+        useEdge: Boolean(match[3]),
+        purpose,
+        commandText: match[0].trim()
+      }),
+      index: (match.index || 0) + match[1].length
+    });
+  }
+
+  return rolls
+    .sort((a, b) => a.index - b.index)
+    .map(({ index: _index, ...roll }) => roll);
+}
+
+function resolveStandardRoll({ diceCount, dieSize, modifier, purpose, commandText }) {
+  const normalizedDiceCount = clampInteger(diceCount, 1, 100);
+  const normalizedDieSize = clampInteger(dieSize, 2, 1000);
+  const normalizedModifier = clampInteger(Math.abs(modifier), 0, 10000) * (Number(modifier) < 0 ? -1 : 1);
+  const normalizedPurpose = sanitizeRollPurpose(purpose);
+  if (!normalizedPurpose) throwRollPurposeError('[roll]');
+  const dice = Array.from({ length: normalizedDiceCount }, () => crypto.randomInt(1, normalizedDieSize + 1));
+  const subtotal = dice.reduce((sum, value) => sum + value, 0);
+  return {
+    rollType: 'standard',
+    commandText: String(commandText || '').trim().slice(0, 120),
+    result: {
+      diceCount: normalizedDiceCount,
+      dieSize: normalizedDieSize,
+      modifier: normalizedModifier,
+      purpose: normalizedPurpose,
+      dice,
+      subtotal,
+      total: subtotal + normalizedModifier
     }
-    const allDice = [...dice, ...edgeDice];
-    const hits = allDice.filter((value) => value >= 5).length;
-    const ones = allDice.filter((value) => value === 1).length;
-    const glitch = ones > allDice.length / 2;
-    rolls.push({
-      rollType: 'shadowrun',
-      commandText: match[0].trim(),
-      result: {
-        diceCount,
-        useEdge,
-        dice,
-        edgeDice,
-        allDice,
-        hits,
-        fives: allDice.filter((value) => value === 5).length,
-        sixes: allDice.filter((value) => value === 6).length,
-        ones,
-        glitch,
-        criticalGlitch: glitch && hits === 0
-      }
-    });
-  }
+  };
+}
 
-  return rolls.sort((a, b) => text.indexOf(a.commandText) - text.indexOf(b.commandText));
+function resolveShadowrunRoll({ diceCount, useEdge, purpose, commandText }) {
+  const normalizedDiceCount = clampInteger(diceCount, 1, 100);
+  const normalizedPurpose = sanitizeRollPurpose(purpose);
+  if (!normalizedPurpose) throwRollPurposeError('[sr]');
+  const dice = Array.from({ length: normalizedDiceCount }, () => crypto.randomInt(1, 7));
+  const edgeDice = [];
+  if (useEdge) {
+    let exploding = dice.filter((value) => value === 6).length;
+    while (exploding > 0 && dice.length + edgeDice.length < 300) {
+      exploding -= 1;
+      const next = crypto.randomInt(1, 7);
+      edgeDice.push(next);
+      if (next === 6) exploding += 1;
+    }
+  }
+  const allDice = [...dice, ...edgeDice];
+  const hits = allDice.filter((value) => value >= 5).length;
+  const ones = allDice.filter((value) => value === 1).length;
+  const glitch = ones > allDice.length / 2;
+  return {
+    rollType: 'shadowrun',
+    commandText: String(commandText || '').trim().slice(0, 120),
+    result: {
+      diceCount: normalizedDiceCount,
+      useEdge: Boolean(useEdge),
+      purpose: normalizedPurpose,
+      dice,
+      edgeDice,
+      allDice,
+      hits,
+      fives: allDice.filter((value) => value === 5).length,
+      sixes: allDice.filter((value) => value === 6).length,
+      ones,
+      glitch,
+      criticalGlitch: glitch && hits === 0
+    }
+  };
+}
+
+function readRollAttribute(attrs, names, fallback) {
+  for (const name of names) {
+    const value = attrs[name];
+    if (value) {
+      return value;
+    }
+  }
+  return fallback;
+}
+
+function readRollModifier(attrs) {
+  if (attrs.modifier || attrs.mod || attrs.bonus) return Number.parseInt(attrs.modifier || attrs.mod || attrs.bonus, 10) || 0;
+  if (attrs.penalty) return -Math.abs(Number.parseInt(attrs.penalty, 10) || 0);
+  return 0;
+}
+
+function readBooleanRollAttribute(attrs, names) {
+  for (const name of names) {
+    if (attrs[name] === undefined) continue;
+    const value = String(attrs[name]).toLowerCase();
+    return ['1', 'true', 'yes', 'y', 'edge'].includes(value);
+  }
+  return false;
+}
+
+function readRollPurpose(attrs) {
+  return sanitizeRollPurpose(attrs.for || attrs.reason || attrs.purpose || attrs.label);
+}
+
+function sanitizeRollPurpose(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 160);
+}
+
+function throwRollPurposeError(command) {
+  const error = new Error(`${command} dice rolls must include what the roll is for.`);
+  error.status = 400;
+  throw error;
 }
 
 function clampInteger(value, min, max) {

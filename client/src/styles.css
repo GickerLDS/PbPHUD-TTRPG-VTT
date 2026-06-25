@@ -51,6 +51,16 @@ button:active:not(:disabled) {
   box-shadow: 0 0 0 3px rgb(37 99 235 / 18%);
 }
 
+.no-underline
+{
+  text-decoration: none !important;
+}
+
+.smaller-button-text
+{
+  font-size: smaller !important;
+}
+
 .text-button {
   border-color: transparent;
   background: transparent;
@@ -937,6 +947,20 @@ select {
   gap: 6px;
 }
 
+.labelNewLine
+{
+  display: block !important;
+}
+
+.label-m-l-1
+{
+  margin-left: 10px !important;
+}
+
+.pad-top-5
+{
+  padding-top: 5px !important;
+}
 .pagination-controls select {
   width: auto;
   min-width: 72px;
@@ -1043,8 +1067,18 @@ select {
   color: var(--ink-soft);
 }
 
+.dice-roll-card header div {
+  display: grid;
+  gap: 2px;
+}
+
 .dice-roll-card header strong {
   color: var(--ruby);
+}
+
+.dice-roll-card header small {
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
 }
 
 .dice-roll-result {
@@ -1111,6 +1145,18 @@ select {
   font-size: 1em;
 }
 
+.bbcode-roll-preview {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 2px 7px;
+  border: 1px solid rgb(141 41 52 / 28%);
+  border-radius: 999px;
+  background: #fff5df;
+  color: var(--ruby);
+  font-weight: 800;
+}
+
 .bbcode-align-center {
   text-align: center;
 }
@@ -1151,6 +1197,33 @@ select {
   background: linear-gradient(#f3f8ed, #c9dabd);
   color: var(--forest);
   font-weight: 800;
+}
+
+.dice-roll-modal {
+  width: min(520px, 92vw);
+}
+
+.dice-roll-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dice-roll-form label,
+.dice-purpose-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dice-purpose-field,
+.dice-roll-form .button-row {
+  grid-column: 1 / -1;
+}
+
+.shadowrun-edge-field {
+  align-self: end;
+  min-height: 38px;
 }
 
 .dice-syntax-help {
@@ -2780,6 +2853,19 @@ textarea {
   background: transparent;
   box-shadow: none;
   text-align: left;
+  text-decoration: none;
+  color: inherit;
+}
+
+.public-category-row {
+  grid-template-columns: minmax(0, 1fr) 120px 120px 160px;
+}
+
+.public-section-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 14px;
+  border-top: 1px solid rgb(169 134 69 / 24%);
 }
 
 .subforum-accordion {
@@ -3029,7 +3115,8 @@ textarea {
   max-width: 240px;
 }
 
-.forum-main-panel .forum-post {
+.forum-main-panel .forum-post,
+.public-forums-page .forum-post:not(.compact) {
   grid-template-columns: 180px minmax(0, 1fr);
   background: rgb(255 250 240 / 86%);
 }
@@ -3388,7 +3475,8 @@ textarea {
     flex-direction: column;
   }
 
-  .forum-main-panel .forum-post {
+  .forum-main-panel .forum-post,
+  .public-forums-page .forum-post:not(.compact) {
     grid-template-columns: 1fr;
   }
 }
@@ -3408,12 +3496,17 @@ textarea {
 
   .traditional-forum-row,
   .traditional-thread-row,
-  .subforum-header {
+  .subforum-header,
+  .public-category-row {
     grid-template-columns: 1fr;
   }
 
   .accordion-thread-list .traditional-thread-row,
   .empty-subforum {
     padding-left: 14px;
+  }
+
+  .dice-roll-form {
+    grid-template-columns: 1fr;
   }
 }

@@ -26,6 +26,31 @@ export async function inviteCampaignMember(campaignId, userId) {
   return parseResponse(response);
 }
 
+export async function createCampaignOwnershipTransfer(campaignId, username) {
+  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/ownership-transfer`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ username })
+  });
+  return parseResponse(response);
+}
+
+export async function getCampaignOwnershipTransfer(token) {
+  const response = await fetch(`/api/campaigns/ownership-transfer/${encodeURIComponent(token)}`, {
+    headers: viewerHeaders()
+  });
+  return parseResponse(response);
+}
+
+export async function respondCampaignOwnershipTransfer(token, decision) {
+  const response = await fetch(`/api/campaigns/ownership-transfer/${encodeURIComponent(token)}/respond`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({ decision })
+  });
+  return parseResponse(response);
+}
+
 export async function listCampaignCast(campaignId) {
   const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast`, {
     headers: viewerHeaders()
