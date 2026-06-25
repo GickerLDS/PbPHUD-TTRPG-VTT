@@ -338,15 +338,6 @@ export async function updateAdminUserRole(userId, communityRole) {
   return parseResponse(response);
 }
 
-export async function sendContactMessage(payload) {
-  const response = await fetch('/api/contact', {
-    method: 'POST',
-    headers: jsonHeaders(),
-    body: JSON.stringify(payload)
-  });
-  return parseResponse(response);
-}
-
 export async function getAuthConfig() {
   const response = await fetch('/api/auth/config');
   return parseResponse(response);

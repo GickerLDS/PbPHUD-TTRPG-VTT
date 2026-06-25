@@ -45,7 +45,6 @@ import {
   resendVerificationEmail,
   respondCampaignOwnershipTransfer,
   saveMap,
-  sendContactMessage,
   sendForumThreadTestNotification,
   setForumThreadVisibility,
   setPublicForumThreadSticky,
@@ -147,11 +146,8 @@ function App() {
   });
   const [authMode, setAuthMode] = useState('login');
   const [authDraft, setAuthDraft] = useState({ email: '', displayName: '', password: '' });
-  const [contactDraft, setContactDraft] = useState({ name: '', email: '', subject: '', message: '' });
   const recaptchaRef = useRef(null);
   const recaptchaWidgetRef = useRef(null);
-  const contactRecaptchaRef = useRef(null);
-  const contactRecaptchaWidgetRef = useRef(null);
   const [viewerUserId, setViewerUserIdState] = useState(() => getViewerUserId());
   const [viewerUserIdDraft, setViewerUserIdDraft] = useState(() => getViewerUserId());
   const [newMap, setNewMap] = useState({ groupName: 'demo', mapName: 'map1', gridWidth: 40, gridHeight: 40 });
@@ -331,25 +327,6 @@ function App() {
   }, [authConfig.recaptchaSiteKey, authConfig.recaptchaType, authMode]);
 
   useEffect(() => {
-    if (!isContactRoute || !authConfig.recaptchaSiteKey || authConfig.recaptchaType !== 'v2') return;
-
-    let cancelled = false;
-    loadRecaptchaScript(authConfig.recaptchaSiteKey, 'v2')
-      .then(() => {
-        if (cancelled || !contactRecaptchaRef.current || !window.grecaptcha?.render || contactRecaptchaWidgetRef.current !== null) return;
-        contactRecaptchaWidgetRef.current = window.grecaptcha.render(contactRecaptchaRef.current, {
-          sitekey: authConfig.recaptchaSiteKey
-        });
-      })
-      .catch(showError);
-
-    return () => {
-      cancelled = true;
-      contactRecaptchaWidgetRef.current = null;
-    };
-  }, [authConfig.recaptchaSiteKey, authConfig.recaptchaType, isContactRoute]);
-
-  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get('verifyEmailToken');
     if (!token) return;
@@ -371,6 +348,11 @@ function App() {
     if (visibleTools.some((item) => item.id === tool)) return;
     setTool(visibleTools[0]?.id ?? 'entity');
   }, [tool, visibleTools]);
+
+  useEffect(() => {
+    if (!isContactRoute) return;
+    window.location.replace('/');
+  }, [isContactRoute]);
 
   useEffect(() => {
     activeMapRef.current = activeMap;
@@ -532,26 +514,6 @@ function App() {
 
       const data = await resendVerificationEmail(authDraft.email);
       setMessage(data.message);
-      setError('');
-    } catch (err) {
-      showError(err);
-    }
-  }
-
-  async function handleContactSubmit(event) {
-    event.preventDefault();
-    try {
-      const latestAuthConfig = await getAuthConfig();
-      setAuthConfig(latestAuthConfig);
-      const recaptchaToken = await getRecaptchaToken(latestAuthConfig, contactRecaptchaWidgetRef.current, 'contact');
-      if (latestAuthConfig.requireRecaptcha && !recaptchaToken) {
-        throw new Error('Could not create a reCAPTCHA token. Refresh the page and try again.');
-      }
-
-      const data = await sendContactMessage({ ...contactDraft, recaptchaToken });
-      window.grecaptcha?.reset?.(contactRecaptchaWidgetRef.current);
-      setContactDraft({ name: '', email: '', subject: '', message: '' });
-      setMessage(data.message || 'Your message has been sent.');
       setError('');
     } catch (err) {
       showError(err);
@@ -1829,25 +1791,7 @@ function App() {
     );
   }
 
-  if (isContactRoute) {
-    return (
-      <>
-        <ContactPage
-          authUser={authUser}
-          authConfig={authConfig}
-          contactDraft={contactDraft}
-          error={error}
-          message={message}
-          recaptchaRef={contactRecaptchaRef}
-          onContactDraftChange={setContactDraft}
-          onSubmit={handleContactSubmit}
-          onOpenAccount={handleOpenAccountModal}
-          onLogout={handleLogout}
-        />
-        {accountModals}
-      </>
-    );
-  }
+  if (isContactRoute) return null;
 
   if (isPublicForumsRoute) {
     return (
@@ -2117,7 +2061,6 @@ function App() {
         )}
         {accountModals}
 
-        {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
         <SiteFooter />
       </main>
     );
@@ -2501,11 +2444,6 @@ function App() {
         </aside>
       </section>
 
-      {(message || error) && (
-        <footer className={`status ${error ? 'error' : ''}`}>
-          {error || message}
-        </footer>
-      )}
       {testNotificationInfo && (
         <TestNotificationModal info={testNotificationInfo} onClose={() => setTestNotificationInfo(null)} />
       )}
@@ -2835,79 +2773,6 @@ function SplashPage({ authUser, onOpenAccount, onLogout }) {
   );
 }
 
-function ContactPage({
-  authUser,
-  authConfig,
-  contactDraft,
-  error,
-  message,
-  recaptchaRef,
-  onContactDraftChange,
-  onSubmit,
-  onOpenAccount,
-  onLogout
-}) {
-  return (
-    <main className="contact-page">
-      <SiteHeader authUser={authUser} onOpenAccount={onOpenAccount} onLogout={onLogout} />
-
-      <section className="contact-layout">
-        <div className="section-heading">
-          <p className="eyebrow">Contact us</p>
-          <h1>Send a message to PBPHUD.</h1>
-          <p>Questions, bug reports, table feedback, and account help all land here.</p>
-        </div>
-
-        <form className="contact-card" onSubmit={onSubmit}>
-          <label>
-            Name
-            <input
-              value={contactDraft.name}
-              onChange={(event) => onContactDraftChange((current) => ({ ...current, name: event.target.value }))}
-              placeholder="Your name"
-              autoComplete="name"
-            />
-          </label>
-          <label>
-            Email
-            <input
-              type="email"
-              value={contactDraft.email}
-              onChange={(event) => onContactDraftChange((current) => ({ ...current, email: event.target.value }))}
-              placeholder="you@example.com"
-              autoComplete="email"
-            />
-          </label>
-          <label>
-            Subject
-            <input
-              value={contactDraft.subject}
-              onChange={(event) => onContactDraftChange((current) => ({ ...current, subject: event.target.value }))}
-              placeholder="How can we help?"
-            />
-          </label>
-          <label>
-            Message
-            <textarea
-              value={contactDraft.message}
-              onChange={(event) => onContactDraftChange((current) => ({ ...current, message: event.target.value }))}
-              placeholder="Tell us what is going on."
-              rows={8}
-            />
-          </label>
-          {authConfig.recaptchaSiteKey && authConfig.recaptchaType === 'v2' && (
-            <div className="recaptcha-control" ref={recaptchaRef} />
-          )}
-          <button type="submit">Send message</button>
-          {(message || error) && <p className={`auth-message ${error ? 'error' : ''}`}>{error || message}</p>}
-        </form>
-      </section>
-
-      <SiteFooter />
-    </main>
-  );
-}
-
 function OwnershipTransferPage({
   authUser,
   invite,
@@ -2947,7 +2812,6 @@ function OwnershipTransferPage({
           )}
         </section>
       </section>
-      {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
       <SiteFooter />
     </main>
   );
@@ -4095,7 +3959,6 @@ function ForumPage({
         </div>
       )}
 
-      {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
       <SiteFooter />
     </main>
   );
@@ -4155,16 +4018,12 @@ function SiteFooter({ compact = false }) {
       <nav aria-label="Footer links">
         <a href="/tos.md">Terms of Service</a>
         <a href="/privacy.md">Privacy Policy</a>
-        <a href="/contact">Contact us</a>
       </nav>
       <nav className="footer-sitemap" aria-label="Sitemap">
-        <span>Sitemap</span>
-        <a href="/">Splash</a>
         <a href="/auth">Sign in</a>
         <a href="/auth?mode=register">Register</a>
         <a href="/dashboard">Dashboard</a>
         <a href="/forums">Forums</a>
-        <a href="/contact">Contact</a>
       </nav>
     </footer>
   );
@@ -4404,7 +4263,6 @@ function AdminPage({
         )}
       </section>
 
-      {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
       <SiteFooter />
     </main>
   );
@@ -4748,7 +4606,6 @@ function PublicForumsPage({
         />
       )}
 
-      {(message || error) && <footer className={`status ${error ? 'error' : ''}`}>{error || message}</footer>}
       <SiteFooter />
     </main>
   );
