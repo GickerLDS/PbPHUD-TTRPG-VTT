@@ -423,6 +423,7 @@ async function getMap(groupName, mapName, viewerUserId = '') {
        campaigns.name AS local_campaign_name,
        campaigns.owner_user_id AS local_campaign_owner_user_id,
        campaign_member.user_id AS local_campaign_member_user_id,
+       campaign_member.member_role AS local_campaign_member_role,
        vtt_campaigns.external_campaign_id AS legacy_campaign_id,
        vtt_campaigns.name AS campaign_name,
        vtt_campaigns.owner_user_id AS campaign_owner_user_id,
@@ -483,6 +484,7 @@ async function getMapById(mapId, viewerUserId = '') {
        campaigns.name AS local_campaign_name,
        campaigns.owner_user_id AS local_campaign_owner_user_id,
        campaign_member.user_id AS local_campaign_member_user_id,
+       campaign_member.member_role AS local_campaign_member_role,
        vtt_campaigns.external_campaign_id AS legacy_campaign_id,
        vtt_campaigns.name AS campaign_name,
        vtt_campaigns.owner_user_id AS campaign_owner_user_id,
@@ -614,6 +616,7 @@ function permissionsFromRow(row, viewerUserId = '') {
     '';
   const memberUserId = row.viewer_member_user_id ?? row.viewerMemberUserId ?? '';
   const localMemberUserId = row.local_campaign_member_user_id ?? row.localCampaignMemberUserId ?? '';
+  const localMemberRole = row.local_campaign_member_role ?? row.localCampaignMemberRole ?? '';
   const shareUserId = row.viewer_share_user_id ?? row.viewerShareUserId ?? '';
   const mapInviteUserId = row.map_invite_user_id ?? row.mapInviteUserId ?? '';
   const campaignId = row.campaign_id ?? row.campaignId ?? row.legacy_campaign_id ?? row.legacyCampaignId ?? '';
@@ -625,11 +628,12 @@ function permissionsFromRow(row, viewerUserId = '') {
     viewerUserId &&
     (isOwner || localMemberUserId === viewerUserId || memberUserId === viewerUserId)
   );
+  const isLocalCampaignLurker = Boolean(!isOwner && localMemberUserId === viewerUserId && localMemberRole === 'lurker');
   const isCampaignMap = Boolean(campaignId);
   const isDemo = visibilityLevel === 'demo';
   const isSiteAdmin = row.viewer_community_role === 'admin' || row.viewerCommunityRole === 'admin';
-  const canEditCampaignMap = isCampaignMap && visibilityLevel !== 'hidden' && (isCampaignMember || isDemo);
-  const canEditMaps = legacyOpen || isOwner || canEditCampaignMap || isDemo;
+  const canEditCampaignMap = isCampaignMap && visibilityLevel !== 'hidden' && !isLocalCampaignLurker && (isCampaignMember || isDemo);
+  const canEditMaps = legacyOpen || isOwner || canEditCampaignMap || (isDemo && !isLocalCampaignLurker);
   const canViewCampaignMap =
     visibilityLevel === 'public' ||
     visibilityLevel === 'demo' ||
@@ -646,9 +650,9 @@ function permissionsFromRow(row, viewerUserId = '') {
     canEditDrawings: canEditMaps,
     canEditBackground: canEditMaps,
     canManageEntities: canEditMaps,
-    canCreateEntities: canViewMap,
+    canCreateEntities: canViewMap && !isLocalCampaignLurker,
     canUseMeasurements: canViewMap,
-    canControlEntities: canViewMap,
+    canControlEntities: canViewMap && !isLocalCampaignLurker,
     canShareMap: canEditMaps,
     canDeleteMaps: isDemo ? isSiteAdmin : (legacyOpen || isOwner)
   };

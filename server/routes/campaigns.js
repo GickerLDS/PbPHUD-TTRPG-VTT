@@ -21,6 +21,13 @@ const campaignSchema = z.object({
   name: z.string().trim().min(1).max(160)
 });
 
+const recruitmentSchema = z.object({
+  gameDescription: z.string().trim().max(20000).optional().default(''),
+  recruitmentInfo: z.string().trim().max(20000).optional().default(''),
+  recruitmentListed: z.boolean().optional().default(false),
+  allowLurkers: z.boolean().optional().default(false)
+});
+
 const inviteSchema = z.object({
   userId: z.string().trim().min(1).max(191)
 });
@@ -116,6 +123,63 @@ campaignsRouter.get('/:campaignId/cast/:castId/portrait', async (req, res, next)
   }
 });
 
+campaignsRouter.get('/recruiting', async (req, res, next) => {
+  try {
+    const rows = await query(
+      `SELECT
+         campaigns.id,
+         campaigns.name,
+         campaigns.game_description AS gameDescription,
+         campaigns.recruitment_info AS recruitmentInfo,
+         campaigns.recruitment_listed AS recruitmentListed,
+         campaigns.allow_lurkers AS allowLurkers,
+         owner.display_name AS ownerDisplayName,
+         owner.email AS ownerEmail,
+         COUNT(DISTINCT maps.id) AS mapCount,
+         COUNT(DISTINCT player_member.user_id) AS playerCount,
+         COUNT(DISTINCT lurker_member.user_id) AS lurkerCount
+       FROM campaigns
+       LEFT JOIN users owner
+         ON campaigns.owner_user_id = CONCAT('user:', owner.id)
+       LEFT JOIN maps ON maps.campaign_id = campaigns.id
+       LEFT JOIN campaign_members player_member
+         ON player_member.campaign_id = campaigns.id
+        AND player_member.member_role <> 'lurker'
+       LEFT JOIN campaign_members lurker_member
+         ON lurker_member.campaign_id = campaigns.id
+        AND lurker_member.member_role = 'lurker'
+       WHERE campaigns.recruitment_listed = TRUE
+          OR campaigns.allow_lurkers = TRUE
+       GROUP BY
+         campaigns.id,
+         campaigns.name,
+         campaigns.game_description,
+         campaigns.recruitment_info,
+         campaigns.recruitment_listed,
+         campaigns.allow_lurkers,
+         owner.display_name,
+         owner.email
+       ORDER BY campaigns.updated_at DESC, campaigns.name`
+    );
+    res.json({
+      campaigns: rows.map((row) => ({
+        id: Number(row.id),
+        name: row.name,
+        gameDescription: row.gameDescription || '',
+        recruitmentInfo: row.recruitmentInfo || '',
+        recruitmentListed: Boolean(row.recruitmentListed),
+        allowLurkers: Boolean(row.allowLurkers),
+        ownerDisplayName: row.ownerDisplayName || row.ownerEmail || 'Campaign GM',
+        mapCount: Number(row.mapCount || 0),
+        playerCount: Number(row.playerCount || 0),
+        lurkerCount: Number(row.lurkerCount || 0)
+      }))
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 campaignsRouter.use((req, res, next) => {
   if (req.method === 'GET' && /^\/[^/]+\/forum\/threads(?:\/[^/]+)?$/.test(req.path)) {
     next();
@@ -133,11 +197,16 @@ campaignsRouter.get('/', async (req, res, next) => {
     const viewerUserId = userPublicId(req.user);
     const rows = await query(
       `SELECT
-         campaigns.id,
-         campaigns.name,
-         campaigns.owner_user_id AS ownerUserId,
-         member.user_id AS memberUserId,
-         COUNT(DISTINCT maps.id) AS mapCount
+       campaigns.id,
+       campaigns.name,
+       campaigns.owner_user_id AS ownerUserId,
+       campaigns.game_description AS gameDescription,
+       campaigns.recruitment_info AS recruitmentInfo,
+       campaigns.recruitment_listed AS recruitmentListed,
+       campaigns.allow_lurkers AS allowLurkers,
+       member.user_id AS memberUserId,
+       member.member_role AS memberRole,
+       COUNT(DISTINCT maps.id) AS mapCount
        FROM campaigns
        LEFT JOIN campaign_members member
          ON member.campaign_id = campaigns.id
@@ -145,7 +214,16 @@ campaignsRouter.get('/', async (req, res, next) => {
        LEFT JOIN maps ON maps.campaign_id = campaigns.id
        WHERE campaigns.owner_user_id = ?
           OR member.user_id IS NOT NULL
-       GROUP BY campaigns.id, campaigns.name, campaigns.owner_user_id, member.user_id
+       GROUP BY
+         campaigns.id,
+         campaigns.name,
+         campaigns.owner_user_id,
+         campaigns.game_description,
+         campaigns.recruitment_info,
+         campaigns.recruitment_listed,
+         campaigns.allow_lurkers,
+         member.user_id,
+         member.member_role
        ORDER BY campaigns.updated_at DESC, campaigns.name`,
       [viewerUserId, viewerUserId]
     );
@@ -154,7 +232,11 @@ campaignsRouter.get('/', async (req, res, next) => {
       id: Number(row.id),
       name: row.name,
       ownerUserId: row.ownerUserId,
-      role: row.ownerUserId === viewerUserId ? 'owner' : 'member',
+      role: row.ownerUserId === viewerUserId ? 'owner' : row.memberRole === 'lurker' ? 'lurker' : 'member',
+      gameDescription: row.gameDescription || '',
+      recruitmentInfo: row.recruitmentInfo || '',
+      recruitmentListed: Boolean(row.recruitmentListed),
+      allowLurkers: Boolean(row.allowLurkers),
       mapCount: Number(row.mapCount),
       unreadForumCount: await loadCampaignUnreadForumCount(row.id, viewerUserId, row.ownerUserId === viewerUserId),
       members: row.ownerUserId === viewerUserId ? await loadCampaignMembers(row.id) : [],
@@ -172,7 +254,11 @@ campaignsRouter.post('/', async (req, res, next) => {
     const body = validate(campaignSchema, req.body);
     const viewerUserId = userPublicId(req.user);
     const result = await query(
-      `INSERT INTO campaigns (name, owner_user_id) VALUES (?, ?)`,
+      `INSERT INTO campaigns (
+         name, owner_user_id, game_description, recruitment_info,
+         recruitment_listed, allow_lurkers
+       )
+       VALUES (?, ?, '', '', FALSE, FALSE)`,
       [body.name, viewerUserId]
     );
     res.status(201).json({
@@ -181,6 +267,10 @@ campaignsRouter.post('/', async (req, res, next) => {
         name: body.name,
         ownerUserId: viewerUserId,
         role: 'owner',
+        gameDescription: '',
+        recruitmentInfo: '',
+        recruitmentListed: false,
+        allowLurkers: false,
         mapCount: 0,
         members: [],
         maps: []
@@ -201,15 +291,83 @@ campaignsRouter.post('/:campaignId/members', async (req, res, next) => {
     }
     if (body.userId !== campaign.owner_user_id) {
       await query(
-        `INSERT INTO campaign_members (campaign_id, user_id)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
+        `INSERT INTO campaign_members (campaign_id, user_id, member_role)
+         VALUES (?, ?, 'player')
+         ON DUPLICATE KEY UPDATE member_role = 'player'`,
         [campaign.id, body.userId]
       );
     }
     await ensureCampaignPlayerCastEntries(campaign.id, campaign.owner_user_id);
     await subscribeUserToCampaignThreadsIfEnabled(campaign.id, body.userId);
     res.json({ members: await loadCampaignMembers(campaign.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.patch('/:campaignId/recruitment', async (req, res, next) => {
+  try {
+    const body = validate(recruitmentSchema, req.body);
+    const campaign = await loadOwnedCampaign(req.params.campaignId, req.user);
+    if (!campaign) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+
+    await query(
+      `UPDATE campaigns
+       SET game_description = ?,
+           recruitment_info = ?,
+           recruitment_listed = ?,
+           allow_lurkers = ?
+       WHERE id = ?`,
+      [
+        body.gameDescription,
+        body.recruitmentInfo,
+        body.recruitmentListed,
+        body.allowLurkers,
+        campaign.id
+      ]
+    );
+    const viewerUserId = userPublicId(req.user);
+    res.json({
+      campaign: await loadCampaignSummary(campaign.id, viewerUserId)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+campaignsRouter.post('/:campaignId/lurkers', async (req, res, next) => {
+  try {
+    const viewerUserId = userPublicId(req.user);
+    const rows = await query(
+      `SELECT id, owner_user_id AS ownerUserId, allow_lurkers AS allowLurkers
+       FROM campaigns
+       WHERE id = ?
+       LIMIT 1`,
+      [req.params.campaignId]
+    );
+    const campaign = rows[0];
+    if (!campaign || !campaign.allowLurkers) {
+      res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+    if (campaign.ownerUserId === viewerUserId) {
+      res.status(400).json({ error: 'You already own this campaign' });
+      return;
+    }
+
+    await query(
+      `INSERT INTO campaign_members (campaign_id, user_id, member_role)
+       VALUES (?, ?, 'lurker')
+       ON DUPLICATE KEY UPDATE member_role = member_role`,
+      [campaign.id, viewerUserId]
+    );
+    await subscribeUserToCampaignThreadsIfEnabled(campaign.id, viewerUserId);
+    res.json({
+      campaign: await loadCampaignSummary(campaign.id, viewerUserId)
+    });
   } catch (error) {
     next(error);
   }
@@ -337,9 +495,9 @@ campaignsRouter.post('/ownership-transfer/:token/respond', async (req, res, next
           [invite.invitedOwnerUserId, invite.campaignId, invite.currentOwnerUserId]
         );
         await connection.query(
-          `INSERT INTO campaign_members (campaign_id, user_id)
-           VALUES (?, ?)
-           ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
+          `INSERT INTO campaign_members (campaign_id, user_id, member_role)
+           VALUES (?, ?, 'player')
+           ON DUPLICATE KEY UPDATE member_role = 'player'`,
           [invite.campaignId, invite.currentOwnerUserId]
         );
         await connection.query(
@@ -381,7 +539,7 @@ campaignsRouter.get('/:campaignId/cast', async (req, res, next) => {
 
     const viewerUserId = userPublicId(req.user);
     await ensureCampaignPlayerCastEntries(campaign.id, campaign.owner_user_id);
-    const cast = await loadCampaignCast(campaign.id, viewerUserId, campaign.owner_user_id === viewerUserId);
+    const cast = await loadCampaignCast(campaign.id, viewerUserId, campaign.owner_user_id === viewerUserId, campaign.owner_user_id);
     res.json({ cast });
   } catch (error) {
     next(error);
@@ -422,7 +580,7 @@ campaignsRouter.post('/:campaignId/cast', async (req, res, next) => {
     await ensureCampaignPlayerCastEntries(campaign.id, campaign.owner_user_id);
     const viewerUserId = userPublicId(req.user);
     res.status(201).json({
-      cast: await loadCampaignCast(campaign.id, viewerUserId, true),
+      cast: await loadCampaignCast(campaign.id, viewerUserId, true, campaign.owner_user_id),
       createdId: Number(result.insertId)
     });
   } catch (error) {
@@ -476,7 +634,7 @@ campaignsRouter.patch('/:campaignId/cast/:castId', async (req, res, next) => {
       );
     }
 
-    res.json({ cast: await loadCampaignCast(campaign.id, viewerUserId, isOwner) });
+    res.json({ cast: await loadCampaignCast(campaign.id, viewerUserId, isOwner, campaign.owner_user_id) });
   } catch (error) {
     next(error);
   }
@@ -502,7 +660,7 @@ campaignsRouter.delete('/:campaignId/cast/:castId', async (req, res, next) => {
 
     await query(`DELETE FROM campaign_cast WHERE id = ? AND campaign_id = ?`, [castEntry.id, campaign.id]);
     const viewerUserId = userPublicId(req.user);
-    res.json({ cast: await loadCampaignCast(campaign.id, viewerUserId, true) });
+    res.json({ cast: await loadCampaignCast(campaign.id, viewerUserId, true, campaign.owner_user_id) });
   } catch (error) {
     next(error);
   }
@@ -552,8 +710,10 @@ campaignsRouter.post('/:campaignId/maps', async (req, res, next) => {
 
 campaignsRouter.get('/:campaignId/forum/threads', async (req, res, next) => {
   try {
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
-    if (!campaign) {
+    const viewerUserId = userPublicId(req.user);
+    const access = await loadCampaignForumAccessByViewerUserId(req.params.campaignId, viewerUserId);
+    const campaign = access?.campaign;
+    if (!access || !campaign) {
       res.status(404).json({ error: 'Campaign not found' });
       return;
     }
@@ -657,9 +817,14 @@ campaignsRouter.post('/:campaignId/forum/threads', async (req, res, next) => {
       return;
     }
     const body = validate(forumThreadSchema, req.body);
-    const campaign = await loadAccessibleCampaign(req.params.campaignId, req.user);
+    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
+      return;
+    }
+    if (!threadPermissions(body.visibilityLevel, access).canPost) {
+      res.status(403).json({ error: 'You cannot post in this campaign' });
       return;
     }
 
@@ -684,12 +849,6 @@ campaignsRouter.post('/:campaignId/forum/threads', async (req, res, next) => {
     });
 
     await subscribeAutoSubscribersToForumThread(campaign.id, Number(result.insertId));
-    const access = {
-      campaign,
-      viewerUserId,
-      isOwner: campaign.owner_user_id === viewerUserId,
-      isMember: true
-    };
     const thread = await loadForumThread(result.insertId, campaign.id, viewerUserId, access);
     res.status(201).json({ thread });
   } catch (error) {
@@ -1204,12 +1363,65 @@ async function loadCampaignForumAccess(campaignId, user) {
   return loadCampaignForumAccessByViewerUserId(campaignId, viewerUserId);
 }
 
+async function loadCampaignSummary(campaignId, viewerUserId) {
+  const rows = await query(
+    `SELECT
+       campaigns.id,
+       campaigns.name,
+       campaigns.owner_user_id AS ownerUserId,
+       campaigns.game_description AS gameDescription,
+       campaigns.recruitment_info AS recruitmentInfo,
+       campaigns.recruitment_listed AS recruitmentListed,
+       campaigns.allow_lurkers AS allowLurkers,
+       member.user_id AS memberUserId,
+       member.member_role AS memberRole,
+       COUNT(DISTINCT maps.id) AS mapCount
+     FROM campaigns
+     LEFT JOIN campaign_members member
+       ON member.campaign_id = campaigns.id
+      AND member.user_id = ?
+     LEFT JOIN maps ON maps.campaign_id = campaigns.id
+     WHERE campaigns.id = ?
+       AND (campaigns.owner_user_id = ? OR member.user_id IS NOT NULL)
+     GROUP BY
+       campaigns.id,
+       campaigns.name,
+       campaigns.owner_user_id,
+       campaigns.game_description,
+       campaigns.recruitment_info,
+       campaigns.recruitment_listed,
+       campaigns.allow_lurkers,
+       member.user_id,
+       member.member_role
+     LIMIT 1`,
+    [viewerUserId, campaignId, viewerUserId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const isOwner = row.ownerUserId === viewerUserId;
+  return {
+    id: Number(row.id),
+    name: row.name,
+    ownerUserId: row.ownerUserId,
+    role: isOwner ? 'owner' : row.memberRole === 'lurker' ? 'lurker' : 'member',
+    gameDescription: row.gameDescription || '',
+    recruitmentInfo: row.recruitmentInfo || '',
+    recruitmentListed: Boolean(row.recruitmentListed),
+    allowLurkers: Boolean(row.allowLurkers),
+    mapCount: Number(row.mapCount),
+    unreadForumCount: await loadCampaignUnreadForumCount(row.id, viewerUserId, isOwner),
+    members: isOwner ? await loadCampaignMembers(row.id) : [],
+    maps: await loadCampaignMaps(row.id, viewerUserId, isOwner)
+  };
+}
+
 async function loadCampaignForumAccessByViewerUserId(campaignId, viewerUserId = '') {
   const rows = await query(
     `SELECT
        campaigns.*,
        campaigns.owner_user_id AS ownerUserId,
-       member.user_id AS memberUserId
+       member.user_id AS memberUserId,
+       member.member_role AS memberRole
      FROM campaigns
      LEFT JOIN campaign_members member
        ON member.campaign_id = campaigns.id
@@ -1222,17 +1434,19 @@ async function loadCampaignForumAccessByViewerUserId(campaignId, viewerUserId = 
   if (!campaign) return null;
   const ownerUserId = campaign.owner_user_id ?? campaign.ownerUserId ?? '';
   const memberUserId = campaign.member_user_id ?? campaign.memberUserId ?? '';
+  const memberRole = campaign.member_role ?? campaign.memberRole ?? '';
   const isOwner = Boolean(viewerUserId && ownerUserId === viewerUserId);
   const isMember = Boolean(isOwner || memberUserId === viewerUserId);
-  return { campaign, viewerUserId, isOwner, isMember };
+  const isLurker = Boolean(!isOwner && isMember && memberRole === 'lurker');
+  return { campaign, viewerUserId, isOwner, isMember, isLurker };
 }
 
 async function loadCampaignMembers(campaignId) {
   const rows = await query(
-    `SELECT user_id AS userId FROM campaign_members WHERE campaign_id = ? ORDER BY user_id`,
+    `SELECT user_id AS userId, member_role AS memberRole FROM campaign_members WHERE campaign_id = ? ORDER BY user_id`,
     [campaignId]
   );
-  return rows.map((row) => row.userId);
+  return rows.map((row) => row.memberRole === 'lurker' ? `${row.userId} (lurker)` : row.userId);
 }
 
 async function loadCampaignUnreadForumCount(campaignId, viewerUserId, isOwner = false) {
@@ -1254,10 +1468,10 @@ async function loadCampaignUnreadForumCount(campaignId, viewerUserId, isOwner = 
 
 async function ensureCampaignPlayerCastEntries(campaignId, ownerUserId) {
   const memberRows = await query(
-    `SELECT user_id AS userId FROM campaign_members WHERE campaign_id = ?`,
+    `SELECT user_id AS userId FROM campaign_members WHERE campaign_id = ? AND member_role <> 'lurker'`,
     [campaignId]
   );
-  const playerUserIds = [...new Set([ownerUserId, ...memberRows.map((row) => row.userId)].filter(Boolean))];
+  const playerUserIds = [...new Set(memberRows.map((row) => row.userId).filter((userId) => userId && userId !== ownerUserId))];
   if (!playerUserIds.length) return;
 
   const existingRows = await query(
@@ -1290,7 +1504,8 @@ async function ensureCampaignPlayerCastEntries(campaignId, ownerUserId) {
   }
 }
 
-async function loadCampaignCast(campaignId, viewerUserId, isOwner) {
+async function loadCampaignCast(campaignId, viewerUserId, isOwner, ownerUserId = '') {
+  const campaignOwnerUserId = ownerUserId || await loadCampaignOwnerUserId(campaignId);
   const rows = await query(
     `SELECT
        id,
@@ -1305,11 +1520,12 @@ async function loadCampaignCast(campaignId, viewerUserId, isOwner) {
        updated_at AS updatedAt
      FROM campaign_cast
      WHERE campaign_id = ?
+       AND NOT (cast_type = 'player' AND owner_user_id = ?)
        AND (? = TRUE OR cast_type = 'player' OR visible_to_players = TRUE OR owner_user_id = ?)
      ORDER BY
        CASE cast_type WHEN 'player' THEN 1 WHEN 'npc' THEN 2 ELSE 3 END,
        name`,
-    [campaignId, isOwner, viewerUserId]
+    [campaignId, campaignOwnerUserId, isOwner, viewerUserId]
   );
 
   return rows.map((row) => {
@@ -2011,6 +2227,7 @@ function threadPermissions(visibilityLevel, access = null) {
   const normalized = normalizeForumThreadVisibility(visibilityLevel);
   const isMember = Boolean(access?.isMember);
   const isOwner = Boolean(access?.isOwner);
+  const isLurker = Boolean(access?.isLurker);
   const signedIn = Boolean(access?.viewerUserId || isMember || isOwner);
   const canView =
     normalized === 'demo' ||
@@ -2019,9 +2236,10 @@ function threadPermissions(visibilityLevel, access = null) {
     (normalized === 'hidden' && isOwner);
   const canPost =
     signedIn &&
+    !isLurker &&
     (
       normalized === 'demo' ||
-      ((normalized === 'public' || normalized === 'campaign') && isMember) ||
+      ((normalized === 'public' || normalized === 'campaign') && isMember && !isLurker) ||
       (normalized === 'hidden' && isOwner)
     );
 

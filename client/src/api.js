@@ -1,15 +1,27 @@
+const API_ORIGIN = typeof __PBPHUD_API_ORIGIN__ === 'string' ? __PBPHUD_API_ORIGIN__ : '';
+
+function apiUrl(path) {
+  if (typeof window !== 'undefined' && window.location.origin === API_ORIGIN) return path;
+  return API_ORIGIN ? `${API_ORIGIN}${path}` : path;
+}
+
 export async function listMaps() {
-  const response = await fetch('/api/maps', { headers: viewerHeaders() });
+  const response = await fetch(apiUrl('/api/maps'), { headers: viewerHeaders() });
   return parseResponse(response);
 }
 
 export async function listCampaigns() {
-  const response = await fetch('/api/campaigns', { headers: viewerHeaders() });
+  const response = await fetch(apiUrl('/api/campaigns'), { headers: viewerHeaders() });
+  return parseResponse(response);
+}
+
+export async function listRecruitingCampaigns() {
+  const response = await fetch(apiUrl('/api/campaigns/recruiting'));
   return parseResponse(response);
 }
 
 export async function createCampaign(payload) {
-  const response = await fetch('/api/campaigns', {
+  const response = await fetch(apiUrl('/api/campaigns'), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -18,7 +30,7 @@ export async function createCampaign(payload) {
 }
 
 export async function inviteCampaignMember(campaignId, userId) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/members`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/members`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({ userId })
@@ -26,8 +38,26 @@ export async function inviteCampaignMember(campaignId, userId) {
   return parseResponse(response);
 }
 
+export async function updateCampaignRecruitment(campaignId, payload) {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/recruitment`), {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify(payload)
+  });
+  return parseResponse(response);
+}
+
+export async function joinCampaignAsLurker(campaignId) {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/lurkers`), {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({})
+  });
+  return parseResponse(response);
+}
+
 export async function createCampaignOwnershipTransfer(campaignId, username) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/ownership-transfer`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/ownership-transfer`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({ username })
@@ -36,14 +66,14 @@ export async function createCampaignOwnershipTransfer(campaignId, username) {
 }
 
 export async function getCampaignOwnershipTransfer(token) {
-  const response = await fetch(`/api/campaigns/ownership-transfer/${encodeURIComponent(token)}`, {
+  const response = await fetch(apiUrl(`/api/campaigns/ownership-transfer/${encodeURIComponent(token)}`), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function respondCampaignOwnershipTransfer(token, decision) {
-  const response = await fetch(`/api/campaigns/ownership-transfer/${encodeURIComponent(token)}/respond`, {
+  const response = await fetch(apiUrl(`/api/campaigns/ownership-transfer/${encodeURIComponent(token)}/respond`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({ decision })
@@ -52,14 +82,14 @@ export async function respondCampaignOwnershipTransfer(token, decision) {
 }
 
 export async function listCampaignCast(campaignId) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/cast`), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function createCampaignCast(campaignId, payload) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/cast`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -68,7 +98,7 @@ export async function createCampaignCast(campaignId, payload) {
 }
 
 export async function updateCampaignCast(campaignId, castId, payload) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}`), {
     method: 'PATCH',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -77,7 +107,7 @@ export async function updateCampaignCast(campaignId, castId, payload) {
 }
 
 export async function deleteCampaignCast(campaignId, castId) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/cast/${encodeURIComponent(castId)}`), {
     method: 'DELETE',
     headers: viewerHeaders()
   });
@@ -85,7 +115,7 @@ export async function deleteCampaignCast(campaignId, castId) {
 }
 
 export async function createCampaignMap(campaignId, payload) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/maps`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/maps`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -95,14 +125,14 @@ export async function createCampaignMap(campaignId, payload) {
 
 export async function listForumThreads(campaignId, mapId = null) {
   const params = mapId ? `?mapId=${encodeURIComponent(mapId)}` : '';
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads${params}`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads${params}`), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function createForumThread(campaignId, payload) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -112,7 +142,7 @@ export async function createForumThread(campaignId, payload) {
 
 export async function getForumThread(campaignId, threadId) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}`),
     { headers: viewerHeaders() }
   );
   return parseResponse(response);
@@ -120,7 +150,7 @@ export async function getForumThread(campaignId, threadId) {
 
 export async function markForumThreadRead(campaignId, threadId) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/read`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/read`),
     {
       method: 'POST',
       headers: viewerHeaders()
@@ -131,7 +161,7 @@ export async function markForumThreadRead(campaignId, threadId) {
 
 export async function subscribeForumThread(campaignId, threadId) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/subscription`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/subscription`),
     {
       method: 'POST',
       headers: viewerHeaders()
@@ -142,7 +172,7 @@ export async function subscribeForumThread(campaignId, threadId) {
 
 export async function unsubscribeForumThread(campaignId, threadId) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/subscription`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/subscription`),
     {
       method: 'DELETE',
       headers: viewerHeaders()
@@ -153,7 +183,7 @@ export async function unsubscribeForumThread(campaignId, threadId) {
 
 export async function sendForumThreadTestNotification(campaignId, threadId) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/test-notification`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/test-notification`),
     {
       method: 'POST',
       headers: viewerHeaders()
@@ -163,7 +193,7 @@ export async function sendForumThreadTestNotification(campaignId, threadId) {
 }
 
 export async function listForumPostIdentities(campaignId) {
-  const response = await fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/post-identities`, {
+  const response = await fetch(apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/post-identities`), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
@@ -171,7 +201,7 @@ export async function listForumPostIdentities(campaignId) {
 
 export async function createForumPost(campaignId, threadId, body) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts`),
     {
       method: 'POST',
       headers: jsonHeaders(),
@@ -183,7 +213,7 @@ export async function createForumPost(campaignId, threadId, body) {
 
 export async function updateForumPost(campaignId, threadId, postId, body) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`),
     {
       method: 'PATCH',
       headers: jsonHeaders(),
@@ -195,7 +225,7 @@ export async function updateForumPost(campaignId, threadId, postId, body) {
 
 export async function deleteForumPost(campaignId, threadId, postId) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`),
     {
       method: 'DELETE',
       headers: viewerHeaders()
@@ -206,7 +236,7 @@ export async function deleteForumPost(campaignId, threadId, postId) {
 
 export async function assignForumThreadMap(campaignId, threadId, mapId) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/map`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/map`),
     {
       method: 'PATCH',
       headers: jsonHeaders(),
@@ -218,7 +248,7 @@ export async function assignForumThreadMap(campaignId, threadId, mapId) {
 
 export async function setForumThreadVisibility(campaignId, threadId, visibilityLevel) {
   const response = await fetch(
-    `/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/visibility`,
+    apiUrl(`/api/campaigns/${encodeURIComponent(campaignId)}/forum/threads/${encodeURIComponent(threadId)}/visibility`),
     {
       method: 'PATCH',
       headers: jsonHeaders(),
@@ -229,21 +259,21 @@ export async function setForumThreadVisibility(campaignId, threadId, visibilityL
 }
 
 export async function listPublicForumSections() {
-  const response = await fetch('/api/public-forums/sections', {
+  const response = await fetch(apiUrl('/api/public-forums/sections'), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function listPublicForumThreads(sectionSlug) {
-  const response = await fetch(`/api/public-forums/sections/${encodeURIComponent(sectionSlug)}/threads`, {
+  const response = await fetch(apiUrl(`/api/public-forums/sections/${encodeURIComponent(sectionSlug)}/threads`), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function createPublicForumThread(sectionSlug, payload) {
-  const response = await fetch(`/api/public-forums/sections/${encodeURIComponent(sectionSlug)}/threads`, {
+  const response = await fetch(apiUrl(`/api/public-forums/sections/${encodeURIComponent(sectionSlug)}/threads`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -252,14 +282,14 @@ export async function createPublicForumThread(sectionSlug, payload) {
 }
 
 export async function getPublicForumThread(threadId) {
-  const response = await fetch(`/api/public-forums/threads/${encodeURIComponent(threadId)}`, {
+  const response = await fetch(apiUrl(`/api/public-forums/threads/${encodeURIComponent(threadId)}`), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function createPublicForumPost(threadId, body) {
-  const response = await fetch(`/api/public-forums/threads/${encodeURIComponent(threadId)}/posts`, {
+  const response = await fetch(apiUrl(`/api/public-forums/threads/${encodeURIComponent(threadId)}/posts`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({ body })
@@ -269,7 +299,7 @@ export async function createPublicForumPost(threadId, body) {
 
 export async function updatePublicForumPost(threadId, postId, body) {
   const response = await fetch(
-    `/api/public-forums/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`,
+    apiUrl(`/api/public-forums/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`),
     {
       method: 'PATCH',
       headers: jsonHeaders(),
@@ -281,7 +311,7 @@ export async function updatePublicForumPost(threadId, postId, body) {
 
 export async function deletePublicForumPost(threadId, postId) {
   const response = await fetch(
-    `/api/public-forums/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`,
+    apiUrl(`/api/public-forums/threads/${encodeURIComponent(threadId)}/posts/${encodeURIComponent(postId)}`),
     {
       method: 'DELETE',
       headers: viewerHeaders()
@@ -291,7 +321,7 @@ export async function deletePublicForumPost(threadId, postId) {
 }
 
 export async function setPublicForumThreadSticky(threadId, sticky) {
-  const response = await fetch(`/api/public-forums/threads/${encodeURIComponent(threadId)}/sticky`, {
+  const response = await fetch(apiUrl(`/api/public-forums/threads/${encodeURIComponent(threadId)}/sticky`), {
     method: 'PATCH',
     headers: jsonHeaders(),
     body: JSON.stringify({ sticky })
@@ -300,37 +330,45 @@ export async function setPublicForumThreadSticky(threadId, sticky) {
 }
 
 export async function listAdminUsers() {
-  const response = await fetch('/api/admin/users', {
+  const response = await fetch(apiUrl('/api/admin/users'), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function getDemoAssignment() {
-  const response = await fetch('/api/admin/demo-assignment', {
+  const response = await fetch(apiUrl('/api/admin/demo-assignment'), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function getAdminDemoAssignmentOptions() {
-  const response = await fetch('/api/admin/demo-assignment/options', {
+  const response = await fetch(apiUrl('/api/admin/demo-assignment/options'), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function updateDemoAssignment(payload) {
-  const response = await fetch('/api/admin/demo-assignment', {
-    method: 'PATCH',
+  const request = (method) => fetch(apiUrl('/api/admin/demo-assignment'), {
+    method,
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
   });
-  return parseResponse(response);
+
+  const response = await request('PATCH');
+  if (response.status !== 404) return parseResponse(response);
+
+  const fallbackResponse = await request('POST');
+  if (fallbackResponse.status === 404) {
+    throw new Error('Demo info save endpoint was not found at the configured API origin. Check that the app is calling the PBPHud API host.');
+  }
+  return parseResponse(fallbackResponse);
 }
 
 export async function updateAdminUserRole(userId, communityRole) {
-  const response = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+  const response = await fetch(apiUrl(`/api/admin/users/${encodeURIComponent(userId)}/role`), {
     method: 'PATCH',
     headers: jsonHeaders(),
     body: JSON.stringify({ communityRole })
@@ -339,17 +377,17 @@ export async function updateAdminUserRole(userId, communityRole) {
 }
 
 export async function getAuthConfig() {
-  const response = await fetch('/api/auth/config');
+  const response = await fetch(apiUrl('/api/auth/config'));
   return parseResponse(response);
 }
 
 export async function getCurrentUser() {
-  const response = await fetch('/api/auth/me', { headers: authHeaders() });
+  const response = await fetch(apiUrl('/api/auth/me'), { headers: authHeaders() });
   return parseResponse(response);
 }
 
 export async function updateAccountProfile(payload) {
-  const response = await fetch('/api/auth/profile', {
+  const response = await fetch(apiUrl('/api/auth/profile'), {
     method: 'PATCH',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -358,7 +396,7 @@ export async function updateAccountProfile(payload) {
 }
 
 export async function registerAccount(payload) {
-  const response = await fetch('/api/auth/register', {
+  const response = await fetch(apiUrl('/api/auth/register'), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -367,7 +405,7 @@ export async function registerAccount(payload) {
 }
 
 export async function loginAccount(payload) {
-  const response = await fetch('/api/auth/login', {
+  const response = await fetch(apiUrl('/api/auth/login'), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -378,7 +416,7 @@ export async function loginAccount(payload) {
 }
 
 export async function resendVerificationEmail(email) {
-  const response = await fetch('/api/auth/resend-verification', {
+  const response = await fetch(apiUrl('/api/auth/resend-verification'), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({ email })
@@ -387,7 +425,7 @@ export async function resendVerificationEmail(email) {
 }
 
 export async function logoutAccount() {
-  const response = await fetch('/api/auth/logout', {
+  const response = await fetch(apiUrl('/api/auth/logout'), {
     method: 'POST',
     headers: authHeaders()
   });
@@ -396,7 +434,7 @@ export async function logoutAccount() {
 }
 
 export async function verifyEmail(token) {
-  const response = await fetch('/api/auth/verify-email', {
+  const response = await fetch(apiUrl('/api/auth/verify-email'), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({ token })
@@ -407,7 +445,7 @@ export async function verifyEmail(token) {
 }
 
 export async function createMap(payload) {
-  const response = await fetch('/api/maps', {
+  const response = await fetch(apiUrl('/api/maps'), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -416,21 +454,21 @@ export async function createMap(payload) {
 }
 
 export async function getMap(groupName, mapName) {
-  const response = await fetch(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}`, {
+  const response = await fetch(apiUrl(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}`), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function getMapById(mapId) {
-  const response = await fetch(`/api/maps/${encodeURIComponent(mapId)}`, {
+  const response = await fetch(apiUrl(`/api/maps/${encodeURIComponent(mapId)}`), {
     headers: viewerHeaders()
   });
   return parseResponse(response);
 }
 
 export async function setMapVisibility(mapId, visibilityLevel) {
-  const response = await fetch(`/api/maps/${encodeURIComponent(mapId)}/visibility`, {
+  const response = await fetch(apiUrl(`/api/maps/${encodeURIComponent(mapId)}/visibility`), {
     method: 'PATCH',
     headers: jsonHeaders(),
     body: JSON.stringify({ visibilityLevel })
@@ -439,7 +477,7 @@ export async function setMapVisibility(mapId, visibilityLevel) {
 }
 
 export async function inviteMapUser(mapId, userId) {
-  const response = await fetch(`/api/maps/${encodeURIComponent(mapId)}/campaign-invites`, {
+  const response = await fetch(apiUrl(`/api/maps/${encodeURIComponent(mapId)}/campaign-invites`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({ userId })
@@ -448,7 +486,7 @@ export async function inviteMapUser(mapId, userId) {
 }
 
 export async function patchTile(groupName, mapName, payload) {
-  const response = await fetch(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/tiles`, {
+  const response = await fetch(apiUrl(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/tiles`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -458,7 +496,7 @@ export async function patchTile(groupName, mapName, payload) {
 
 export async function patchEntity(groupName, mapName, entityId, payload) {
   const response = await fetch(
-    `/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/entities/${encodeURIComponent(entityId)}`,
+    apiUrl(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/entities/${encodeURIComponent(entityId)}`),
     {
       method: 'PATCH',
       headers: jsonHeaders(),
@@ -469,7 +507,7 @@ export async function patchEntity(groupName, mapName, entityId, payload) {
 }
 
 export async function createEntity(groupName, mapName, payload) {
-  const response = await fetch(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/entities`, {
+  const response = await fetch(apiUrl(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/entities`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -478,7 +516,7 @@ export async function createEntity(groupName, mapName, payload) {
 }
 
 export async function shareMap(groupName, mapName, userId) {
-  const response = await fetch(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/shares`, {
+  const response = await fetch(apiUrl(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/shares`), {
     method: 'POST',
     headers: jsonHeaders(),
     body: JSON.stringify({ userId })
@@ -488,7 +526,7 @@ export async function shareMap(groupName, mapName, userId) {
 
 export async function unshareMap(groupName, mapName, userId) {
   const response = await fetch(
-    `/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/shares/${encodeURIComponent(userId)}`,
+    apiUrl(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}/shares/${encodeURIComponent(userId)}`),
     {
       method: 'DELETE',
       headers: viewerHeaders()
@@ -498,7 +536,7 @@ export async function unshareMap(groupName, mapName, userId) {
 }
 
 export async function saveMap(groupName, mapName, payload) {
-  const response = await fetch(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}`, {
+  const response = await fetch(apiUrl(`/api/maps/${encodeURIComponent(groupName)}/${encodeURIComponent(mapName)}`), {
     method: 'PUT',
     headers: jsonHeaders(),
     body: JSON.stringify(payload)
@@ -507,7 +545,7 @@ export async function saveMap(groupName, mapName, payload) {
 }
 
 export async function listTileAssets() {
-  const response = await fetch('/api/assets/tiles');
+  const response = await fetch(apiUrl('/api/assets/tiles'));
   return parseResponse(response);
 }
 

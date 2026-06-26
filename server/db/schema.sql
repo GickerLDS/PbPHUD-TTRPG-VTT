@@ -80,15 +80,26 @@ CREATE TABLE IF NOT EXISTS campaigns (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   name VARCHAR(160) NOT NULL,
   owner_user_id VARCHAR(191) NOT NULL,
+  game_description LONGTEXT NOT NULL,
+  recruitment_info LONGTEXT NOT NULL,
+  recruitment_listed BOOLEAN NOT NULL DEFAULT FALSE,
+  allow_lurkers BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_campaigns_owner (owner_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS game_description LONGTEXT NOT NULL AFTER owner_user_id;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS recruitment_info LONGTEXT NOT NULL AFTER game_description;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS recruitment_listed BOOLEAN NOT NULL DEFAULT FALSE AFTER recruitment_info;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS allow_lurkers BOOLEAN NOT NULL DEFAULT FALSE AFTER recruitment_listed;
+ALTER TABLE campaigns ADD INDEX IF NOT EXISTS idx_campaigns_recruitment (recruitment_listed, allow_lurkers);
+
 CREATE TABLE IF NOT EXISTS campaign_members (
   campaign_id BIGINT UNSIGNED NOT NULL,
   user_id VARCHAR(191) NOT NULL,
+  member_role VARCHAR(20) NOT NULL DEFAULT 'player',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (campaign_id, user_id),
   KEY idx_campaign_members_user (user_id),
@@ -96,6 +107,8 @@ CREATE TABLE IF NOT EXISTS campaign_members (
     FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE campaign_members ADD COLUMN IF NOT EXISTS member_role VARCHAR(20) NOT NULL DEFAULT 'player' AFTER user_id;
 
 CREATE TABLE IF NOT EXISTS campaign_ownership_transfer_invites (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

@@ -27,6 +27,7 @@ import {
   getViewerUserId,
   inviteCampaignMember,
   inviteMapUser,
+  joinCampaignAsLurker,
   listCampaigns,
   listCampaignCast,
   listAdminUsers,
@@ -35,6 +36,7 @@ import {
   listMaps,
   listPublicForumSections,
   listPublicForumThreads,
+  listRecruitingCampaigns,
   listTileAssets,
   loginAccount,
   logoutAccount,
@@ -59,6 +61,7 @@ import {
   unsubscribeForumThread,
   unshareMap,
   updateAccountProfile,
+  updateCampaignRecruitment,
   updateDemoAssignment,
   verifyEmail
 } from './api.js';
@@ -111,6 +114,7 @@ function App() {
   const isPublicForumsRoute = Boolean(publicForumRouteMatch);
   const publicForumSectionSlug = publicForumRouteMatch?.[1] ? decodeURIComponent(publicForumRouteMatch[1]) : '';
   const publicForumThreadId = publicForumRouteMatch?.[2] || '';
+  const isGamesListRoute = path === '/games';
   const isDemoRoute = path === '/demo';
   const isAuthRoute = path === '/auth';
   const isContactRoute = path === '/contact';
@@ -155,6 +159,7 @@ function App() {
   const [shareUserId, setShareUserId] = useState('');
   const [campaignDraft, setCampaignDraft] = useState({ name: '' });
   const [campaignMemberDraft, setCampaignMemberDraft] = useState({});
+  const [campaignRecruitmentDraft, setCampaignRecruitmentDraft] = useState({});
   const [campaignOwnershipTransferDraft, setCampaignOwnershipTransferDraft] = useState({});
   const [ownershipTransferInvite, setOwnershipTransferInvite] = useState(null);
   const [campaignMapDraft, setCampaignMapDraft] = useState({});
@@ -178,6 +183,7 @@ function App() {
   const [publicForumNewThreadSection, setPublicForumNewThreadSection] = useState(null);
   const [publicForumThreadDraft, setPublicForumThreadDraft] = useState({ title: '', body: '' });
   const [publicForumReplyDraft, setPublicForumReplyDraft] = useState('');
+  const [recruitingCampaigns, setRecruitingCampaigns] = useState([]);
   const [adminUsers, setAdminUsers] = useState([]);
   const [demoAssignment, setDemoAssignment] = useState(null);
   const [adminDemoOptions, setAdminDemoOptions] = useState({ campaigns: [], maps: [], threads: [] });
@@ -240,6 +246,13 @@ function App() {
     });
   }, [permissions]);
 
+  const localAdminDemoOptions = useMemo(() => {
+    return buildAdminDemoOptionsFromCampaignState(campaigns, campaignForumThreads);
+  }, [campaigns, campaignForumThreads]);
+  const effectiveAdminDemoOptions = useMemo(() => {
+    return mergeAdminDemoOptions(adminDemoOptions, localAdminDemoOptions);
+  }, [localAdminDemoOptions, adminDemoOptions]);
+
   useEffect(() => {
     refreshMaps();
     refreshDemoAssignment();
@@ -279,6 +292,11 @@ function App() {
     if (!isPublicForumsRoute) return;
     refreshPublicForumSections();
   }, [isPublicForumsRoute]);
+
+  useEffect(() => {
+    if (!isGamesListRoute) return;
+    refreshRecruitingCampaigns();
+  }, [isGamesListRoute]);
 
   useEffect(() => {
     if (!isPublicForumsRoute || !publicForumSectionSlug) {
@@ -614,6 +632,16 @@ function App() {
     }
   }
 
+  async function refreshRecruitingCampaigns() {
+    try {
+      const data = await listRecruitingCampaigns();
+      setRecruitingCampaigns(data.campaigns || []);
+      setError('');
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function refreshDemoAssignment() {
     try {
       const data = await getDemoAssignment();
@@ -629,12 +657,14 @@ function App() {
   async function refreshAdminDemoOptions() {
     try {
       const data = await getAdminDemoAssignmentOptions();
-      setAdminDemoOptions({
+      const serverOptions = {
         campaigns: data.campaigns || [],
         maps: data.maps || [],
         threads: data.threads || []
-      });
-      setAdminDemoDraft(buildDemoAssignmentDraft(data.demoAssignment));
+      };
+      const nextOptions = mergeAdminDemoOptions(serverOptions, localAdminDemoOptions);
+      setAdminDemoOptions(serverOptions);
+      setAdminDemoDraft(buildDemoAssignmentDraft(data.demoAssignment, nextOptions));
       setDemoAssignment(data.demoAssignment);
       setError('');
     } catch (err) {
@@ -705,6 +735,52 @@ function App() {
     }
   }
 
+  async function handleSaveCampaignRecruitment(campaign) {
+    const draft = campaignRecruitmentDraft[campaign.id] || campaign;
+    try {
+      const data = await updateCampaignRecruitment(campaign.id, {
+        gameDescription: draft.gameDescription || '',
+        recruitmentInfo: draft.recruitmentInfo || '',
+        recruitmentListed: Boolean(draft.recruitmentListed),
+        allowLurkers: Boolean(draft.allowLurkers)
+      });
+      setCampaigns((current) => current.map((item) => (
+        Number(item.id) === Number(campaign.id) ? data.campaign : item
+      )));
+      setCampaignRecruitmentDraft((current) => {
+        const next = { ...current };
+        delete next[campaign.id];
+        return next;
+      });
+      setMessage('Recruitment settings saved');
+      setError('');
+      if (isGamesListRoute) await refreshRecruitingCampaigns();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  async function handleJoinCampaignAsLurker(campaign) {
+    if (!authUser) {
+      window.location.href = '/auth?mode=login';
+      return;
+    }
+    try {
+      const data = await joinCampaignAsLurker(campaign.id);
+      setCampaigns((current) => {
+        const exists = current.some((item) => Number(item.id) === Number(data.campaign.id));
+        return exists
+          ? current.map((item) => (Number(item.id) === Number(data.campaign.id) ? data.campaign : item))
+          : [data.campaign, ...current];
+      });
+      setMessage(`Joined ${data.campaign.name} as a lurker`);
+      setError('');
+      await refreshRecruitingCampaigns();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
   async function handleCreateCampaignMap(campaignId) {
     const draft = campaignMapDraft[campaignId] || {};
     const mapName = String(draft.mapName || '').trim();
@@ -726,6 +802,17 @@ function App() {
 
   async function openDashboardModal(type, campaign) {
     setDashboardModal({ type, campaignId: campaign.id });
+    if (type === 'recruitment') {
+      setCampaignRecruitmentDraft((current) => ({
+        ...current,
+        [campaign.id]: {
+          gameDescription: campaign.gameDescription || '',
+          recruitmentInfo: campaign.recruitmentInfo || '',
+          recruitmentListed: Boolean(campaign.recruitmentListed),
+          allowLurkers: Boolean(campaign.allowLurkers)
+        }
+      }));
+    }
     if (type === 'preview' || type === 'permissions') {
       await Promise.all([
         refreshCampaignForumThreads(campaign.id),
@@ -750,7 +837,7 @@ function App() {
     const key = getCastDraftKey(campaign.id, 'new');
     const draft = campaignCastDraft[key] || {};
     const name = String(draft.name || '').trim();
-    if (!name) return;
+    if (!name) return false;
     try {
       if (draft.portraitUrl) await validatePortraitSource(draft.portraitUrl);
       const data = await createCampaignCast(campaign.id, {
@@ -770,8 +857,10 @@ function App() {
       }));
       setMessage(`Added ${name} to The Cast`);
       setError('');
+      return true;
     } catch (err) {
       showError(err);
+      return false;
     }
   }
 
@@ -947,7 +1036,7 @@ function App() {
         next.threadId = '';
       }
       if (field === 'mapId') {
-        const selectedThread = adminDemoOptions.threads.find((thread) => String(thread.id) === String(next.threadId));
+        const selectedThread = effectiveAdminDemoOptions.threads.find((thread) => String(thread.id) === String(next.threadId));
         if (!value || String(selectedThread?.mapId || '') !== String(value)) next.threadId = '';
       }
       return next;
@@ -964,7 +1053,11 @@ function App() {
       };
       const data = await updateDemoAssignment(payload);
       setDemoAssignment(data.demoAssignment);
-      setAdminDemoDraft(buildDemoAssignmentDraft(data.demoAssignment));
+      setAdminDemoDraft({
+        campaignId: payload.campaignId ? String(payload.campaignId) : '',
+        mapId: payload.mapId ? String(payload.mapId) : '',
+        threadId: payload.threadId ? String(payload.threadId) : ''
+      });
       setMessage('Demo link assignment saved');
       setError('');
       await refreshAdminDemoOptions();
@@ -1830,6 +1923,25 @@ function App() {
     );
   }
 
+  if (isGamesListRoute) {
+    return (
+      <>
+        <GamesListPage
+          authUser={authUser}
+          campaigns={recruitingCampaigns}
+          userCampaigns={campaigns}
+          message={message}
+          error={error}
+          onOpenAccount={handleOpenAccountModal}
+          onLogout={handleLogout}
+          onRefresh={refreshRecruitingCampaigns}
+          onJoinLurker={handleJoinCampaignAsLurker}
+        />
+        {accountModals}
+      </>
+    );
+  }
+
   if (!authUser && !isDemoRoute) {
     return (
       <main className="auth-page">
@@ -1902,20 +2014,20 @@ function App() {
   if (isAdminRoute) {
     return (
       <>
-      <AdminPage
-        authUser={authUser}
-        users={adminUsers}
-        demoAssignment={demoAssignment}
-        demoOptions={adminDemoOptions}
-        demoDraft={adminDemoDraft}
-        message={message}
-        error={error}
-        onOpenAccount={handleOpenAccountModal}
-        onLogout={handleLogout}
-        onDemoDraftChange={handleAdminDemoDraftChange}
-        onSaveDemoAssignment={handleSaveDemoAssignment}
-        onUpdateRole={handleUpdateAdminUserRole}
-      />
+        <AdminPage
+          authUser={authUser}
+          users={adminUsers}
+          demoAssignment={demoAssignment}
+          demoOptions={effectiveAdminDemoOptions}
+          demoDraft={adminDemoDraft}
+          message={message}
+          error={error}
+          onOpenAccount={handleOpenAccountModal}
+          onLogout={handleLogout}
+          onDemoDraftChange={handleAdminDemoDraftChange}
+          onSaveDemoAssignment={handleSaveDemoAssignment}
+          onUpdateRole={handleUpdateAdminUserRole}
+        />
         {accountModals}
       </>
     );
@@ -1980,7 +2092,7 @@ function App() {
         <SiteHeader
           authUser={authUser}
           title="Campaign Dashboard"
-          subtitle={`Signed in as ${authUser.displayName}`}
+          subtitle="Manage you campaigns and characters"
           onOpenAccount={handleOpenAccountModal}
           onLogout={handleLogout}
         />
@@ -2018,6 +2130,7 @@ function App() {
             cast={campaignCast[activeDashboardCampaign.id] || []}
             castDrafts={campaignCastDraft}
             memberDraft={campaignMemberDraft[activeDashboardCampaign.id] || ''}
+            recruitmentDraft={campaignRecruitmentDraft[activeDashboardCampaign.id] || activeDashboardCampaign}
             ownershipTransferDraft={campaignOwnershipTransferDraft[activeDashboardCampaign.id] || ''}
             mapDraft={campaignMapDraft[activeDashboardCampaign.id] || {}}
             forumThreads={campaignForumThreads[activeDashboardCampaign.id] || []}
@@ -2027,6 +2140,11 @@ function App() {
             onClose={() => setDashboardModal(null)}
             onMemberDraftChange={(value) => setCampaignMemberDraft((current) => ({ ...current, [activeDashboardCampaign.id]: value }))}
             onInviteMember={() => handleInviteCampaignMember(activeDashboardCampaign.id)}
+            onRecruitmentDraftChange={(patch) => setCampaignRecruitmentDraft((current) => ({
+              ...current,
+              [activeDashboardCampaign.id]: { ...(current[activeDashboardCampaign.id] || activeDashboardCampaign), ...patch }
+            }))}
+            onSaveRecruitment={() => handleSaveCampaignRecruitment(activeDashboardCampaign)}
             onOwnershipTransferDraftChange={(value) => setCampaignOwnershipTransferDraft((current) => ({ ...current, [activeDashboardCampaign.id]: value }))}
             onCreateOwnershipTransfer={() => handleCreateOwnershipTransfer(activeDashboardCampaign)}
             onMapDraftChange={(patch) => setCampaignMapDraft((current) => ({
@@ -2479,6 +2597,7 @@ function canPostInCampaignThread(thread, campaign, authUser) {
   if (!thread || !authUser) return false;
   if (thread.permissions?.canPost) return true;
   const visibilityLevel = thread.visibilityLevel || 'campaign';
+  if (campaign?.role === 'lurker') return false;
   if (visibilityLevel === 'demo') return true;
   if (campaign?.role === 'owner') return true;
   return campaign?.role === 'member' && (visibilityLevel === 'public' || visibilityLevel === 'campaign');
@@ -2817,12 +2936,82 @@ function OwnershipTransferPage({
   );
 }
 
+function GamesListPage({
+  authUser,
+  campaigns,
+  userCampaigns,
+  message,
+  error,
+  onOpenAccount,
+  onLogout,
+  onRefresh,
+  onJoinLurker
+}) {
+  const userCampaignIds = new Set(userCampaigns.map((campaign) => Number(campaign.id)));
+  return (
+    <main className="dashboard-page games-list-page">
+      <SiteHeader
+        authUser={authUser}
+        title="Games List"
+        subtitle="Campaigns looking for players and lurkers"
+        onOpenAccount={onOpenAccount}
+        onLogout={onLogout}
+        actions={<button type="button" onClick={onRefresh}>Refresh</button>}
+      />
+
+      <section className="campaign-list games-list">
+        <h2>Open Campaigns</h2>
+        {(message || error) && <p className={`auth-message ${error ? 'error' : ''}`}>{error || message}</p>}
+        {campaigns.map((campaign) => {
+          const alreadyJoined = userCampaignIds.has(Number(campaign.id));
+          return (
+            <article className="campaign-card game-list-card" key={campaign.id}>
+              <div className="campaign-card-header">
+                <div>
+                  <h3>{campaign.name}</h3>
+                  <p>
+                    {campaign.ownerDisplayName} · {formatCount(campaign.playerCount, 'player')} · {formatCount(campaign.lurkerCount, 'lurker')}
+                  </p>
+                </div>
+                <div className="button-row campaign-action-buttons smaller-button-text">
+                  {campaign.allowLurkers && !alreadyJoined && (
+                    <button type="button" onClick={() => onJoinLurker(campaign)}>
+                      {authUser ? 'Join as Lurker' : 'Sign in to Lurk'}
+                    </button>
+                  )}
+                  {alreadyJoined && <a className="button no-underline" href="/dashboard">Open Dashboard</a>}
+                </div>
+              </div>
+              {campaign.gameDescription && <p className="game-list-text">{campaign.gameDescription}</p>}
+              {campaign.recruitmentInfo && (
+                <div className="game-list-recruitment">
+                  <strong>Recruitment</strong>
+                  <p>{campaign.recruitmentInfo}</p>
+                </div>
+              )}
+              <div className="game-list-flags">
+                {campaign.recruitmentListed && <span>Recruiting</span>}
+                {campaign.allowLurkers && <span>Open to lurkers</span>}
+                <span>{formatCount(campaign.mapCount, 'map')}</span>
+              </div>
+            </article>
+          );
+        })}
+        {!campaigns.length && <p className="empty-state">No campaigns are recruiting yet.</p>}
+      </section>
+
+      <SiteFooter />
+    </main>
+  );
+}
+
 function DashboardCampaignModal({
   type,
   campaign,
   cast,
   castDrafts,
   memberDraft,
+  recruitmentDraft,
   ownershipTransferDraft,
   mapDraft,
   forumThreads,
@@ -2832,6 +3021,8 @@ function DashboardCampaignModal({
   onClose,
   onMemberDraftChange,
   onInviteMember,
+  onRecruitmentDraftChange,
+  onSaveRecruitment,
   onOwnershipTransferDraftChange,
   onCreateOwnershipTransfer,
   onMapDraftChange,
@@ -2850,8 +3041,8 @@ function DashboardCampaignModal({
 }) {
   const title = {
     members: 'Manage Members',
-    maps: 'List Maps',
-    'add-map': 'Add Map',
+    maps: 'Maps',
+    recruitment: 'Recruitment',
     cast: 'Manage the Cast',
     characters: 'List Characters',
     'add-character': 'Add Character',
@@ -2891,41 +3082,85 @@ function DashboardCampaignModal({
         )}
 
         {type === 'maps' && (
-          <DashboardMapList
-            campaign={campaign}
-            forumThreads={forumThreads}
-            onSetMapVisibility={onSetMapVisibility}
-            onAssignMapThread={onAssignMapThread}
-            showPermissions={false}
-          />
+          <div className="dashboard-modal-body dashboard-maps-body">
+            {campaign.role === 'owner' && (
+              <section className="dashboard-map-create">
+                <h4>Add Map</h4>
+                <div className="inline-form campaign-map-form">
+                  <input
+                    value={mapDraft.mapName || ''}
+                    onChange={(event) => onMapDraftChange({ mapName: event.target.value })}
+                    placeholder="New map name"
+                  />
+                  <label className="compact-field">
+                    <span>Width</span>
+                    <input
+                      value={mapDraft.gridWidth || 40}
+                      onChange={(event) => onMapDraftChange({ gridWidth: event.target.value })}
+                      inputMode="numeric"
+                    />
+                  </label>
+                  <label className="compact-field">
+                    <span>Height</span>
+                    <input
+                      value={mapDraft.gridHeight || 40}
+                      onChange={(event) => onMapDraftChange({ gridHeight: event.target.value })}
+                      inputMode="numeric"
+                    />
+                  </label>
+                  <button type="button" onClick={onCreateMap}>Create map</button>
+                </div>
+              </section>
+            )}
+            <DashboardMapList
+              campaign={campaign}
+              forumThreads={forumThreads}
+              onSetMapVisibility={onSetMapVisibility}
+              onAssignMapThread={onAssignMapThread}
+              showPermissions={false}
+            />
+          </div>
         )}
 
-        {type === 'add-map' && (
-          <div className="dashboard-modal-body">
-            <div className="inline-form campaign-map-form">
-              <input
-                value={mapDraft.mapName || ''}
-                onChange={(event) => onMapDraftChange({ mapName: event.target.value })}
-                placeholder="New map name"
+        {type === 'recruitment' && campaign.role === 'owner' && (
+          <div className="dashboard-modal-body recruitment-modal-body">
+            <label>
+              <span>Game description</span>
+              <textarea
+                value={recruitmentDraft.gameDescription || ''}
+                onChange={(event) => onRecruitmentDraftChange({ gameDescription: event.target.value })}
+                placeholder="Describe the campaign premise, tone, system, schedule, and table style."
+                rows={5}
               />
-              <label className="compact-field">
-                <span>Width</span>
+            </label>
+            <label>
+              <span>Recruitment info</span>
+              <textarea
+                value={recruitmentDraft.recruitmentInfo || ''}
+                onChange={(event) => onRecruitmentDraftChange({ recruitmentInfo: event.target.value })}
+                placeholder="Say what roles, characters, posting pace, or player expectations you are looking for."
+                rows={5}
+              />
+            </label>
+            <div className="recruitment-options">
+              <label className="check-control">
                 <input
-                  value={mapDraft.gridWidth || 40}
-                  onChange={(event) => onMapDraftChange({ gridWidth: event.target.value })}
-                  inputMode="numeric"
+                  type="checkbox"
+                  checked={Boolean(recruitmentDraft.recruitmentListed)}
+                  onChange={(event) => onRecruitmentDraftChange({ recruitmentListed: event.target.checked })}
                 />
+                List in Games List
               </label>
-              <label className="compact-field">
-                <span>Height</span>
+              <label className="check-control">
                 <input
-                  value={mapDraft.gridHeight || 40}
-                  onChange={(event) => onMapDraftChange({ gridHeight: event.target.value })}
-                  inputMode="numeric"
+                  type="checkbox"
+                  checked={Boolean(recruitmentDraft.allowLurkers)}
+                  onChange={(event) => onRecruitmentDraftChange({ allowLurkers: event.target.checked })}
                 />
+                Allow people to join as lurkers
               </label>
-              <button type="button" onClick={onCreateMap}>Create map</button>
             </div>
+            <button type="button" onClick={onSaveRecruitment}>Save recruitment</button>
           </div>
         )}
 
@@ -2998,7 +3233,7 @@ function DashboardCampaignModal({
 
 function DashboardMapList({ campaign, forumThreads, onSetMapVisibility, onAssignMapThread, showPermissions }) {
   return (
-    <div className={`dashboard-map-list dashboard-modal-body ${showPermissions ? 'permission-map-list' : ''}`}>
+    <div className={`dashboard-map-list ${showPermissions ? 'permission-map-list' : ''}`}>
       {campaign.maps.map((map) => {
         const assignedThread = forumThreads.find((thread) => Number(thread.mapId) === Number(map.id));
         return (
@@ -3070,8 +3305,8 @@ function CampaignDashboardSection({ title, campaigns, emptyText, onOpenDashboard
               {campaign.role === 'owner' ? (
                 <>
                   <button type="button" onClick={() => onOpenDashboardModal('members', campaign)}>Manage Members</button>
-                  <button type="button" onClick={() => onOpenDashboardModal('maps', campaign)}>List Maps</button>
-                  <button type="button" onClick={() => onOpenDashboardModal('add-map', campaign)}>Add Map</button>
+                  <button type="button" onClick={() => onOpenDashboardModal('maps', campaign)}>Maps</button>
+                  <button type="button" onClick={() => onOpenDashboardModal('recruitment', campaign)}>Recruitment</button>
                   <a
                     className="button no-underline"
                     href={`/campaigns/${campaign.id}/forums`}
@@ -3085,7 +3320,7 @@ function CampaignDashboardSection({ title, campaigns, emptyText, onOpenDashboard
                 </>
               ) : (
                 <>
-                  <button type="button" onClick={() => onOpenDashboardModal('maps', campaign)}>List Maps</button>
+                  <button type="button" onClick={() => onOpenDashboardModal('maps', campaign)}>Maps</button>
                   <a
                     className="button no-underline"
                     href={`/campaigns/${campaign.id}/forums`}
@@ -3094,8 +3329,12 @@ function CampaignDashboardSection({ title, campaigns, emptyText, onOpenDashboard
                   >
                     Open Forums
                   </a>
-                  <button type="button" onClick={() => onOpenDashboardModal('characters', campaign)}>List Characters</button>
-                  <button type="button" onClick={() => onOpenDashboardModal('add-character', campaign)}>Add Character</button>
+                  {campaign.role !== 'lurker' && (
+                    <>
+                      <button type="button" onClick={() => onOpenDashboardModal('characters', campaign)}>List Characters</button>
+                      <button type="button" onClick={() => onOpenDashboardModal('add-character', campaign)}>Add Character</button>
+                    </>
+                  )}
                 </>
               )}
             </div>
@@ -3212,74 +3451,162 @@ function CampaignCastPanel({
   onSave,
   onDelete
 }) {
+  const [selectedCastId, setSelectedCastId] = useState('');
+  const [activeCastTab, setActiveCastTab] = useState('player');
+  const [createCastOpen, setCreateCastOpen] = useState(false);
+  const [createCastMinimized, setCreateCastMinimized] = useState(false);
   const newKey = getCastDraftKey(campaign.id, 'new');
   const newDraft = drafts[newKey] || { castType: 'npc', visibleToPlayers: true };
+  const visibleCast = useMemo(
+    () => cast.filter((entry) => !(entry.castType === 'player' && entry.ownerUserId === campaign.ownerUserId)),
+    [cast, campaign.ownerUserId]
+  );
   const grouped = {
-    player: cast.filter((entry) => entry.castType === 'player'),
-    npc: cast.filter((entry) => entry.castType === 'npc'),
-    monster: cast.filter((entry) => entry.castType === 'monster')
+    player: visibleCast.filter((entry) => entry.castType === 'player'),
+    npc: visibleCast.filter((entry) => entry.castType === 'npc'),
+    monster: visibleCast.filter((entry) => entry.castType === 'monster')
   };
+  const castTabs = [
+    { id: 'player', label: 'Players', emptyText: 'No players yet.' },
+    { id: 'npc', label: 'NPCs', emptyText: 'No NPCs yet.' },
+    { id: 'monster', label: 'Monsters', emptyText: 'No monsters yet.' }
+  ];
+  const activeTab = castTabs.find((tab) => tab.id === activeCastTab) || castTabs[0];
+  const activeEntries = grouped[activeTab.id] || [];
+  const selectedEntry = visibleCast.find((entry) => String(entry.id) === String(selectedCastId));
+  const selectedDraft = selectedEntry ? drafts[getCastDraftKey(campaign.id, selectedEntry.id)] || selectedEntry : null;
+
+  useEffect(() => {
+    if (selectedCastId && !visibleCast.some((entry) => String(entry.id) === String(selectedCastId))) {
+      setSelectedCastId('');
+    }
+  }, [visibleCast, selectedCastId]);
+
+  async function handleCreateCast() {
+    const created = await onCreate();
+    if (created) setCreateCastOpen(false);
+  }
 
   return (
     <section className="campaign-cast-panel">
       <div className="campaign-forum-header">
         <strong>The Cast</strong>
-        <small>Players always show. NPCs and monsters can be hidden from players by the GM.</small>
+        <small>Select a cast member to edit their details.</small>
       </div>
 
-      <div className="cast-columns">
-        <CastGroup
-          title="Players"
-          entries={grouped.player}
-          campaign={campaign}
-          drafts={drafts}
-          onDraftChange={onDraftChange}
-          onPortraitFile={onPortraitFile}
-          onSave={onSave}
-          onDelete={onDelete}
-        />
-        <CastGroup
-          title="NPCs"
-          entries={grouped.npc}
-          campaign={campaign}
-          drafts={drafts}
-          onDraftChange={onDraftChange}
-          onPortraitFile={onPortraitFile}
-          onSave={onSave}
-          onDelete={onDelete}
-        />
-        <CastGroup
-          title="Monsters"
-          entries={grouped.monster}
-          campaign={campaign}
-          drafts={drafts}
-          onDraftChange={onDraftChange}
-          onPortraitFile={onPortraitFile}
-          onSave={onSave}
-          onDelete={onDelete}
-        />
+      <div className="cast-tabs" role="tablist" aria-label="Cast type">
+        {castTabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={activeTab.id === tab.id ? 'selected' : ''}
+            onClick={() => setActiveCastTab(tab.id)}
+            role="tab"
+            aria-selected={activeTab.id === tab.id}
+          >
+            <span>{tab.label}</span>
+            <small>{grouped[tab.id].length}</small>
+          </button>
+        ))}
       </div>
+
+      <div className="cast-list compact-cast-list" role="tabpanel" aria-label={activeTab.label}>
+        {activeEntries.map((entry) => (
+          <CastEntryCard
+            key={entry.id}
+            entry={entry}
+            draft={drafts[getCastDraftKey(campaign.id, entry.id)] || entry}
+            selected={String(selectedCastId) === String(entry.id)}
+            onSelect={setSelectedCastId}
+          />
+        ))}
+        {!activeEntries.length && <p>{activeTab.emptyText}</p>}
+      </div>
+
+      {selectedEntry && (
+        <CastEntryEditor
+          campaign={campaign}
+          entry={selectedEntry}
+          draft={selectedDraft}
+          onDraftChange={onDraftChange}
+          onPortraitFile={onPortraitFile}
+          onSave={onSave}
+          onDelete={onDelete}
+          onClose={() => setSelectedCastId('')}
+        />
+      )}
 
       {campaign.role === 'owner' && (
+        <div className="cast-panel-actions">
+          <button
+            type="button"
+            onClick={() => {
+              setCreateCastOpen(true);
+              setCreateCastMinimized(false);
+            }}
+          >
+            Add
+          </button>
+        </div>
+      )}
+
+      {createCastOpen && createCastMinimized && (
+        <div className="cast-minimized-create">
+          <span>Add NPC or monster</span>
+          <div className="button-row">
+            <button type="button" onClick={() => setCreateCastMinimized(false)}>Restore</button>
+            <button type="button" onClick={() => setCreateCastOpen(false)}>Close</button>
+          </div>
+        </div>
+      )}
+
+      {createCastOpen && !createCastMinimized && (
+        <CastCreateModal
+          campaign={campaign}
+          draft={newDraft}
+          onDraftChange={onDraftChange}
+          onPortraitFile={onPortraitFile}
+          onCreate={handleCreateCast}
+          onMinimize={() => setCreateCastMinimized(true)}
+          onClose={() => setCreateCastOpen(false)}
+        />
+      )}
+    </section>
+  );
+}
+
+function CastCreateModal({ campaign, draft, onDraftChange, onPortraitFile, onCreate, onMinimize, onClose }) {
+  return (
+    <div className="modal-backdrop nested-modal-backdrop" role="presentation">
+      <section className="confirm-modal cast-create-modal" role="dialog" aria-modal="true" aria-label="Add cast member">
+        <header>
+          <div>
+            <strong>Add NPC or monster</strong>
+            <small>{campaign.name}</small>
+          </div>
+          <div className="button-row">
+            <button type="button" onClick={onMinimize}>Minimize</button>
+            <button type="button" onClick={onClose}>Close</button>
+          </div>
+        </header>
         <div className="cast-create-card">
-          <strong>Add NPC or monster</strong>
           <div className="inline-form">
             <select
-              value={newDraft.castType || 'npc'}
+              value={draft.castType || 'npc'}
               onChange={(event) => onDraftChange(campaign.id, 'new', { castType: event.target.value })}
             >
               <option value="npc">NPC</option>
               <option value="monster">Monster</option>
             </select>
             <input
-              value={newDraft.name || ''}
+              value={draft.name || ''}
               onChange={(event) => onDraftChange(campaign.id, 'new', { name: event.target.value })}
               placeholder="Name"
             />
             <label className="check-control">
               <input
                 type="checkbox"
-                checked={newDraft.visibleToPlayers !== false}
+                checked={draft.visibleToPlayers !== false}
                 onChange={(event) => onDraftChange(campaign.id, 'new', { visibleToPlayers: event.target.checked })}
               />
               Show to players
@@ -3288,117 +3615,118 @@ function CampaignCastPanel({
           <CastPortraitControls
             campaignId={campaign.id}
             entryId="new"
-            portraitUrl={newDraft.portraitUrl || ''}
+            portraitUrl={draft.portraitUrl || ''}
             onDraftChange={onDraftChange}
             onPortraitFile={onPortraitFile}
           />
           <textarea
-            value={newDraft.publicDescription || ''}
+            value={draft.publicDescription || ''}
             onChange={(event) => onDraftChange(campaign.id, 'new', { publicDescription: event.target.value })}
             placeholder="Description shown to players"
             rows={3}
           />
           <textarea
-            value={newDraft.gmNotes || ''}
+            value={draft.gmNotes || ''}
             onChange={(event) => onDraftChange(campaign.id, 'new', { gmNotes: event.target.value })}
             placeholder="GM notes"
             rows={3}
           />
-          <button type="button" onClick={onCreate}>Add to The Cast</button>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function CastGroup({ title, entries, campaign, drafts, onDraftChange, onPortraitFile, onSave, onDelete }) {
-  return (
-    <section className="cast-group">
-      <h4>{title}</h4>
-      <div className="cast-list">
-        {entries.map((entry) => (
-          <CastEntryCard
-            key={entry.id}
-            campaign={campaign}
-            entry={entry}
-            draft={drafts[getCastDraftKey(campaign.id, entry.id)] || entry}
-            onDraftChange={onDraftChange}
-            onPortraitFile={onPortraitFile}
-            onSave={onSave}
-            onDelete={onDelete}
-          />
-        ))}
-        {!entries.length && <p>No {title.toLowerCase()} yet.</p>}
-      </div>
-    </section>
-  );
-}
-
-function CastEntryCard({ campaign, entry, draft, onDraftChange, onPortraitFile, onSave, onDelete }) {
-  const label = entry.castType === 'player' ? 'Player' : entry.castType === 'npc' ? 'NPC' : 'Monster';
-  return (
-    <article className={`cast-card ${entry.visibleToPlayers ? '' : 'hidden-cast'}`}>
-      <div className="cast-card-header">
-        <div className="cast-portrait">
-          {draft.portraitUrl ? <img src={draft.portraitUrl} alt="" /> : <span>{String(draft.name || '?').slice(0, 2).toUpperCase()}</span>}
-        </div>
-        <div>
-          <strong>{entry.name}</strong>
-          <small>
-            {label}
-            {entry.castType !== 'player' && !entry.visibleToPlayers ? ' · hidden from players' : ''}
-          </small>
-        </div>
-      </div>
-
-      {entry.canEdit ? (
-        <div className="cast-edit-form">
-          <input
-            value={draft.name || ''}
-            onChange={(event) => onDraftChange(campaign.id, entry.id, { name: event.target.value })}
-            placeholder="Name"
-          />
-          <CastPortraitControls
-            campaignId={campaign.id}
-            entryId={entry.id}
-            portraitUrl={draft.portraitUrl || ''}
-            onDraftChange={onDraftChange}
-            onPortraitFile={onPortraitFile}
-          />
-          {entry.canManageVisibility && (
-            <label className="check-control">
-              <input
-                type="checkbox"
-                checked={draft.visibleToPlayers !== false}
-                onChange={(event) => onDraftChange(campaign.id, entry.id, { visibleToPlayers: event.target.checked })}
-              />
-              Show to players
-            </label>
-          )}
-          <textarea
-            value={draft.publicDescription || ''}
-            onChange={(event) => onDraftChange(campaign.id, entry.id, { publicDescription: event.target.value })}
-            placeholder="Description shown to players"
-            rows={3}
-          />
-          <textarea
-            value={draft.gmNotes || ''}
-            onChange={(event) => onDraftChange(campaign.id, entry.id, { gmNotes: event.target.value })}
-            placeholder="GM notes"
-            rows={3}
-          />
           <div className="button-row">
-            <button type="button" onClick={() => onSave(entry)}>Save</button>
-            {entry.canDelete && <button type="button" onClick={() => onDelete(entry)}>Delete</button>}
+            <button type="button" onClick={onCreate}>Add to The Cast</button>
+            <button type="button" onClick={onClose}>Cancel</button>
           </div>
         </div>
-      ) : (
-        <div className="cast-readonly">
-          <p>{entry.publicDescription || 'No public description yet.'}</p>
-          {entry.gmNotes && <small>GM notes: {entry.gmNotes}</small>}
+      </section>
+    </div>
+  );
+}
+
+function CastEntryCard({ entry, draft, selected, onSelect }) {
+  const label = entry.castType === 'player' ? 'Player' : entry.castType === 'npc' ? 'NPC' : 'Monster';
+  const portraitFallback = String(draft.name || entry.name || '?').slice(0, 2).toUpperCase();
+  return (
+    <button
+      type="button"
+      className={`cast-card ${entry.visibleToPlayers ? '' : 'hidden-cast'} ${selected ? 'selected-cast' : ''}`}
+      onClick={() => onSelect(entry.id)}
+      aria-label={`Edit ${entry.name}`}
+    >
+      <div className="cast-card-header">
+        <div className="cast-portrait">
+          {draft.portraitUrl ? <img src={draft.portraitUrl} alt="" /> : <span>{portraitFallback}</span>}
         </div>
-      )}
-    </article>
+        <span>
+          <strong>{entry.name}</strong>
+          <small>{label}</small>
+        </span>
+      </div>
+    </button>
+  );
+}
+
+function CastEntryEditor({ campaign, entry, draft, onDraftChange, onPortraitFile, onSave, onDelete, onClose }) {
+  const label = entry.castType === 'player' ? 'Player' : entry.castType === 'npc' ? 'NPC' : 'Monster';
+  return (
+    <div className="modal-backdrop nested-modal-backdrop" role="presentation">
+      <section className="confirm-modal cast-entry-modal" role="dialog" aria-modal="true" aria-label={`Edit ${entry.name}`}>
+        <header>
+          <div className="cast-editor-title">
+            <strong>{entry.name}</strong>
+            <small>{label}</small>
+          </div>
+          <button type="button" onClick={onClose}>Close</button>
+        </header>
+        <section className="cast-editor-card">
+          {entry.canEdit ? (
+            <div className="cast-edit-form">
+              <input
+                value={draft.name || ''}
+                onChange={(event) => onDraftChange(campaign.id, entry.id, { name: event.target.value })}
+                placeholder="Name"
+              />
+              <CastPortraitControls
+                campaignId={campaign.id}
+                entryId={entry.id}
+                portraitUrl={draft.portraitUrl || ''}
+                onDraftChange={onDraftChange}
+                onPortraitFile={onPortraitFile}
+              />
+              {entry.canManageVisibility && (
+                <label className="check-control">
+                  <input
+                    type="checkbox"
+                    checked={draft.visibleToPlayers !== false}
+                    onChange={(event) => onDraftChange(campaign.id, entry.id, { visibleToPlayers: event.target.checked })}
+                  />
+                  Show to players
+                </label>
+              )}
+              <textarea
+                value={draft.publicDescription || ''}
+                onChange={(event) => onDraftChange(campaign.id, entry.id, { publicDescription: event.target.value })}
+                placeholder="Description shown to players"
+                rows={3}
+              />
+              <textarea
+                value={draft.gmNotes || ''}
+                onChange={(event) => onDraftChange(campaign.id, entry.id, { gmNotes: event.target.value })}
+                placeholder="GM notes"
+                rows={3}
+              />
+              <div className="button-row">
+                <button type="button" onClick={() => onSave(entry)}>Save</button>
+                {entry.canDelete && <button type="button" onClick={() => onDelete(entry)}>Delete</button>}
+              </div>
+            </div>
+          ) : (
+            <div className="cast-readonly">
+              <p>{entry.publicDescription || 'No public description yet.'}</p>
+              {entry.gmNotes && <small>GM notes: {entry.gmNotes}</small>}
+            </div>
+          )}
+        </section>
+      </section>
+    </div>
   );
 }
 
@@ -3992,8 +4320,9 @@ function SiteHeader({
       <nav className="main-nav" aria-label="Site pages">
         <a href="/">Home</a>
         <a href="/forums">Community Forums</a>
+        <a href="/games">Games List</a>
         {authUser && <a href="/dashboard">Campaign Dashboard</a>}
-        <a href="/demo">Demo</a>
+        <a href="/demo" target="pbphubdemo">Demo</a>
         {authUser?.communityRole === 'admin' && <a href="/admin">Admin</a>}
         {authUser && <button type="button" className="nav-button" onClick={onOpenAccount}>Account</button>}
         {authUser ? (
@@ -4130,12 +4459,94 @@ function formatCommunityRole(role) {
   return 'Community Member';
 }
 
-function buildDemoAssignmentDraft(assignment = null) {
+function buildAdminDemoOptionsFromCampaignState(campaigns = [], campaignForumThreads = {}) {
+  const ownedCampaigns = campaigns
+    .filter((campaign) => campaign.role === 'owner')
+    .map((campaign) => ({
+      id: Number(campaign.id),
+      name: campaign.name,
+      maps: (campaign.maps || [])
+        .map((map) => ({
+          id: Number(map.id),
+          campaignId: Number(campaign.id),
+          name: map.name,
+          visibilityLevel: map.visibilityLevel
+        })),
+      threads: (campaignForumThreads[campaign.id] || [])
+        .map((thread) => ({
+          id: Number(thread.id),
+          campaignId: Number(campaign.id),
+          mapId: thread.mapId ? Number(thread.mapId) : null,
+          title: thread.title,
+          visibilityLevel: thread.visibilityLevel
+        }))
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
+
   return {
+    campaigns: ownedCampaigns.map(({ id, name }) => ({ id, name })),
+    maps: ownedCampaigns
+      .flatMap((campaign) => campaign.maps)
+      .sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id),
+    threads: ownedCampaigns
+      .flatMap((campaign) => campaign.threads)
+      .sort((a, b) => a.title.localeCompare(b.title) || a.id - b.id)
+  };
+}
+
+function mergeAdminDemoOptions(primary = { campaigns: [], maps: [], threads: [] }, secondary = { campaigns: [], maps: [], threads: [] }) {
+  const mergeById = (primaryItems = [], secondaryItems = [], labelKey = 'name') => {
+    const itemsById = new Map();
+    for (const item of secondaryItems) {
+      itemsById.set(String(item.id), item);
+    }
+    for (const item of primaryItems) {
+      itemsById.set(String(item.id), item);
+    }
+    return [...itemsById.values()].sort((a, b) => a[labelKey].localeCompare(b[labelKey]) || a.id - b.id);
+  };
+
+  return {
+    campaigns: mergeById(primary.campaigns, secondary.campaigns),
+    maps: mergeById(primary.maps, secondary.maps),
+    threads: mergeById(primary.threads, secondary.threads, 'title')
+  };
+}
+
+function buildDemoAssignmentDraft(assignment = null, options = { campaigns: [], maps: [], threads: [] }) {
+  const draft = {
     campaignId: assignment?.campaignId ? String(assignment.campaignId) : '',
     mapId: assignment?.mapId ? String(assignment.mapId) : '',
     threadId: assignment?.threadId ? String(assignment.threadId) : ''
   };
+  const campaignIds = new Set((options.campaigns || []).map((campaign) => String(campaign.id)));
+  if (draft.campaignId && !campaignIds.has(draft.campaignId)) {
+    return { campaignId: '', mapId: '', threadId: '' };
+  }
+
+  const mapIds = new Set(
+    (options.maps || [])
+      .filter((map) => String(map.campaignId) === draft.campaignId)
+      .map((map) => String(map.id))
+  );
+  if (draft.mapId && !mapIds.has(draft.mapId)) {
+    draft.mapId = '';
+    draft.threadId = '';
+  }
+
+  const threadIds = new Set(
+    (options.threads || [])
+      .filter((thread) => (
+        String(thread.campaignId) === draft.campaignId &&
+        String(thread.mapId || '') === String(draft.mapId || '')
+      ))
+      .map((thread) => String(thread.id))
+  );
+  if (draft.threadId && !threadIds.has(draft.threadId)) {
+    draft.threadId = '';
+  }
+
+  return draft;
 }
 
 function AdminPage({
@@ -4164,7 +4575,7 @@ function AdminPage({
       <SiteHeader
         authUser={authUser}
         title="Community Admin"
-        subtitle="Manage public forum roles"
+        subtitle="Manage Site Options"
         onOpenAccount={onOpenAccount}
         onLogout={onLogout}
       />
@@ -4193,6 +4604,7 @@ function AdminPage({
                   </small>
                 )}
               </div>
+              {(message || error) && <p className={`auth-message ${error ? 'error' : ''}`}>{error || message}</p>}
               <div className="admin-demo-grid">
                 <label>
                   <span>Campaign</span>
@@ -4200,7 +4612,7 @@ function AdminPage({
                     value={demoDraft.campaignId}
                     onChange={(event) => onDemoDraftChange('campaignId', event.target.value)}
                   >
-                    <option value="">Use fallback demo map</option>
+                    <option value="">{demoOptions.campaigns.length ? 'No campaign selected' : 'No owned campaigns available'}</option>
                     {demoOptions.campaigns.map((campaign) => (
                       <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
                     ))}
@@ -4233,7 +4645,7 @@ function AdminPage({
                   </select>
                 </label>
               </div>
-              <button type="submit">Save Demo Link</button>
+              <button type="submit">Save Demo Info</button>
             </form>
 
             <div className="admin-user-list">
@@ -4530,63 +4942,63 @@ function PublicForumsPage({
           {threadId && (
             <>
               {selectedThread ? (
-              <>
-                <header className="forum-thread-header">
-                <div>
-                  <h2>{selectedThread.title}</h2>
-                  <p>{selectedThread.sectionTitle || 'Public forum thread'} · {formatCount(selectedThread.postCount, 'post')}</p>
-                </div>
-                {selectedThread.canModerate && (
-                  <button type="button" onClick={() => onToggleSticky(selectedThread)}>
-                    {selectedThread.sticky ? 'Unstick thread' : 'Make sticky'}
-                  </button>
-                )}
-              </header>
-                <div className="forum-post-list">
-                {pagedPosts.items.map((post) => (
-                  <ForumPostArticle
-                    key={post.id}
-                    post={post}
-                    threadId={selectedThread.id}
-                    viewerUserId={authUser?.id || ''}
-                    canEdit={post.canEdit}
-                    canDelete={post.canDelete}
-                    portraitRefreshKey={portraitRefreshKey}
-                    editingPost={editingPost}
-                    onStartEditPost={onStartEditPost}
-                    onEditDraftChange={onEditDraftChange}
-                    onCancelEditPost={onCancelEditPost}
-                    onSaveEditPost={onSaveEditPost}
-                    onDeletePost={onDeletePost}
+                <>
+                  <header className="forum-thread-header">
+                    <div>
+                      <h2>{selectedThread.title}</h2>
+                      <p>{selectedThread.sectionTitle || 'Public forum thread'} · {formatCount(selectedThread.postCount, 'post')}</p>
+                    </div>
+                    {selectedThread.canModerate && (
+                      <button type="button" onClick={() => onToggleSticky(selectedThread)}>
+                        {selectedThread.sticky ? 'Unstick thread' : 'Make sticky'}
+                      </button>
+                    )}
+                  </header>
+                  <div className="forum-post-list">
+                    {pagedPosts.items.map((post) => (
+                      <ForumPostArticle
+                        key={post.id}
+                        post={post}
+                        threadId={selectedThread.id}
+                        viewerUserId={authUser?.id || ''}
+                        canEdit={post.canEdit}
+                        canDelete={post.canDelete}
+                        portraitRefreshKey={portraitRefreshKey}
+                        editingPost={editingPost}
+                        onStartEditPost={onStartEditPost}
+                        onEditDraftChange={onEditDraftChange}
+                        onCancelEditPost={onCancelEditPost}
+                        onSaveEditPost={onSaveEditPost}
+                        onDeletePost={onDeletePost}
+                      />
+                    ))}
+                  </div>
+                  <PaginationControls
+                    label="Posts"
+                    totalItems={selectedPosts.length}
+                    page={pagedPosts.currentPage}
+                    pageSize={postPageSize}
+                    onPageChange={setPostPage}
+                    onPageSizeChange={(size) => {
+                      setPostPageSize(size);
+                      setPostPage(1);
+                    }}
+                    labelOnNewLine={0}
                   />
-                ))}
-                </div>
-                <PaginationControls
-                label="Posts"
-                totalItems={selectedPosts.length}
-                page={pagedPosts.currentPage}
-                pageSize={postPageSize}
-                onPageChange={setPostPage}
-                onPageSizeChange={(size) => {
-                  setPostPageSize(size);
-                  setPostPage(1);
-                }}
-                labelOnNewLine={0}
-              />
-                {authUser ? (
-                <form className="forum-reply-form" onSubmit={onCreatePost}>
-                  <BBCodeEditor
-                    value={replyDraft}
-                    onChange={onReplyDraftChange}
-                    portraitRefreshKey={portraitRefreshKey}
-                    placeholder="Reply with BBCode"
-                  />
-                  <button type="submit">Post reply</button>
-                </form>
-              ) : (
-                <p className="auth-required-note"><a href="/auth">Sign in</a> or <a href="/auth?mode=register">register</a> to reply.</p>
-              )}
-              </>
+                  {authUser ? (
+                    <form className="forum-reply-form" onSubmit={onCreatePost}>
+                      <BBCodeEditor
+                        value={replyDraft}
+                        onChange={onReplyDraftChange}
+                        portraitRefreshKey={portraitRefreshKey}
+                        placeholder="Reply with BBCode"
+                      />
+                      <button type="submit">Post reply</button>
+                    </form>
+                  ) : (
+                    <p className="auth-required-note"><a href="/auth">Sign in</a> or <a href="/auth?mode=register">register</a> to reply.</p>
+                  )}
+                </>
               ) : (
                 <div className="empty-state">Loading thread...</div>
               )}

@@ -1,5 +1,6 @@
 import express from 'express';
 import { z } from 'zod';
+import { userPublicId } from '../auth.js';
 import { query } from '../db.js';
 import { validate } from '../validation.js';
 
@@ -37,26 +38,33 @@ adminRouter.use((req, res, next) => {
   next();
 });
 
-adminRouter.get('/demo-assignment/options', async (_req, res, next) => {
+adminRouter.get('/demo-assignment/options', async (req, res, next) => {
   try {
+    const viewerUserId = userPublicId(req.user);
     const [campaignRows, mapRows, threadRows] = await Promise.all([
       query(
         `SELECT id, name
          FROM campaigns
-         ORDER BY name, id`
+         WHERE owner_user_id = ?
+         ORDER BY name, id`,
+        [viewerUserId]
       ),
       query(
-        `SELECT id, campaign_id AS campaignId, map_name AS mapName, visibility_level AS visibilityLevel
+        `SELECT maps.id, maps.campaign_id AS campaignId, maps.map_name AS mapName, maps.visibility_level AS visibilityLevel
          FROM maps
-         WHERE campaign_id IS NOT NULL
-           AND visibility_level IN ('public', 'demo')
-         ORDER BY map_name, id`
+         INNER JOIN campaigns ON campaigns.id = maps.campaign_id
+         WHERE campaigns.owner_user_id = ?
+           AND maps.campaign_id IS NOT NULL
+         ORDER BY maps.map_name, maps.id`,
+        [viewerUserId]
       ),
       query(
-        `SELECT id, campaign_id AS campaignId, map_id AS mapId, title, visibility_level AS visibilityLevel
+        `SELECT campaign_forum_threads.id, campaign_forum_threads.campaign_id AS campaignId, campaign_forum_threads.map_id AS mapId, campaign_forum_threads.title, campaign_forum_threads.visibility_level AS visibilityLevel
          FROM campaign_forum_threads
-         WHERE visibility_level IN ('public', 'demo')
-         ORDER BY title, id`
+         INNER JOIN campaigns ON campaigns.id = campaign_forum_threads.campaign_id
+         WHERE campaigns.owner_user_id = ?
+         ORDER BY campaign_forum_threads.title, campaign_forum_threads.id`,
+        [viewerUserId]
       )
     ]);
 
@@ -85,51 +93,61 @@ adminRouter.get('/demo-assignment/options', async (_req, res, next) => {
   }
 });
 
-adminRouter.patch('/demo-assignment', async (req, res, next) => {
+async function saveDemoAssignmentRoute(req, res, next) {
   try {
     const body = validate(demoAssignmentSchema, req.body);
+    const viewerUserId = userPublicId(req.user);
     if (!body.campaignId && (body.mapId || body.threadId)) {
       res.status(400).json({ error: 'Choose a campaign before choosing a map or forum thread.' });
       return;
     }
 
     if (body.campaignId) {
-      const campaignRows = await query(`SELECT id FROM campaigns WHERE id = ? LIMIT 1`, [body.campaignId]);
+      const campaignRows = await query(
+        `SELECT id
+         FROM campaigns
+         WHERE id = ?
+           AND owner_user_id = ?
+         LIMIT 1`,
+        [body.campaignId, viewerUserId]
+      );
       if (!campaignRows.length) {
-        res.status(400).json({ error: 'Demo campaign was not found.' });
+        res.status(400).json({ error: 'Demo campaign must be one of your campaigns.' });
         return;
       }
     }
 
     if (body.mapId) {
       const mapRows = await query(
-        `SELECT id
+        `SELECT maps.id
          FROM maps
-         WHERE id = ?
-           AND campaign_id = ?
-           AND visibility_level IN ('public', 'demo')
+         INNER JOIN campaigns ON campaigns.id = maps.campaign_id
+         WHERE maps.id = ?
+           AND maps.campaign_id = ?
+           AND campaigns.owner_user_id = ?
          LIMIT 1`,
-        [body.mapId, body.campaignId]
+        [body.mapId, body.campaignId, viewerUserId]
       );
       if (!mapRows.length) {
-        res.status(400).json({ error: 'Demo map must belong to the selected campaign and be Public or Demo visibility.' });
+        res.status(400).json({ error: 'Demo map must belong to one of your campaigns.' });
         return;
       }
     }
 
     if (body.threadId) {
       const threadRows = await query(
-        `SELECT id, map_id AS mapId
+        `SELECT campaign_forum_threads.id, campaign_forum_threads.map_id AS mapId
          FROM campaign_forum_threads
-         WHERE id = ?
-           AND campaign_id = ?
-           AND visibility_level IN ('public', 'demo')
+         INNER JOIN campaigns ON campaigns.id = campaign_forum_threads.campaign_id
+         WHERE campaign_forum_threads.id = ?
+           AND campaign_forum_threads.campaign_id = ?
+           AND campaigns.owner_user_id = ?
          LIMIT 1`,
-        [body.threadId, body.campaignId]
+        [body.threadId, body.campaignId, viewerUserId]
       );
       const thread = threadRows[0];
       if (!thread) {
-        res.status(400).json({ error: 'Demo forum thread must belong to the selected campaign and be Public or Demo visibility.' });
+        res.status(400).json({ error: 'Demo forum thread must belong to one of your campaigns.' });
         return;
       }
       if (body.mapId && Number(thread.mapId) !== Number(body.mapId)) {
@@ -143,7 +161,10 @@ adminRouter.patch('/demo-assignment', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+}
+
+adminRouter.patch('/demo-assignment', saveDemoAssignmentRoute);
+adminRouter.post('/demo-assignment', saveDemoAssignmentRoute);
 
 adminRouter.get('/users', async (_req, res, next) => {
   try {

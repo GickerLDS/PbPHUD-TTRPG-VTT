@@ -13,8 +13,8 @@ const clientOrigin =
   process.env.CLIENT_ORIGIN ||
   `${process.env.CLIENT_PROTOCOL || 'http'}://${clientHost}:${clientPort}`;
 const apiTarget =
-  process.env.API_ORIGIN ||
   `${process.env.API_PROTOCOL || 'http'}://${process.env.API_HOST || '127.0.0.1'}:${intFromEnv('PORT', 3001)}`;
+const browserApiOrigin = (process.env.API_ORIGIN || '').replace(/\/$/, '');
 
 function hostFromOrigin(origin) {
   try {
@@ -35,6 +35,9 @@ const allowedHosts = [
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __PBPHUD_API_ORIGIN__: JSON.stringify(browserApiOrigin)
+  },
   root: 'client',
   build: {
     outDir: '../dist',

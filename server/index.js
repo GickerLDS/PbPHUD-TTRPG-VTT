@@ -32,7 +32,8 @@ app.use(cors({
       return;
     }
     callback(new Error(`CORS origin not allowed: ${origin}`));
-  }
+  },
+  optionsSuccessStatus: 200
 }));
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan(config.nodeEnv === 'production' ? 'combined' : 'dev'));

@@ -13,15 +13,16 @@ This is a new Node.js/MariaDB/React implementation for the legacy PBPHud map sys
 
 ## Setup
 
-1. Create a MariaDB database and user.
-2. Copy `.env.example` to `.env` and update the DB values.
-3. Install packages:
+1. Use Node.js `20.19.0+` or `22.12.0+`.
+2. Create a MariaDB database and user.
+3. Copy `.env.example` to `.env` and update the DB values.
+4. Install packages:
 
 ```powershell
 npm.cmd install
 ```
 
-4. Make sure MariaDB is running at the host and port in `.env`.
+5. Make sure MariaDB is running at the host and port in `.env`.
 
 If you have Docker Desktop, this repo includes a local MariaDB service that uses your `.env` values:
 
@@ -31,13 +32,13 @@ docker compose up -d mariadb
 
 Without Docker, start your MariaDB/MySQL service manually and create the database/user named in `.env`.
 
-5. Run the schema migration:
+6. Run the schema migration:
 
 ```powershell
 npm.cmd run db:migrate
 ```
 
-6. Start development mode:
+7. Start development mode:
 
 ```powershell
 npm.cmd run dev
