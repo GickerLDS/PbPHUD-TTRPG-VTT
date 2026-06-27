@@ -13,10 +13,12 @@ export function EntityPanel({
   entities,
   selectedEntityId,
   tiles,
+  campaignCast = [],
   canManageEntities,
   canCreateEntities,
   canEditEntity,
   onAdd,
+  onAddCastMember,
   onUpdate,
   onDelete,
   onSelect
@@ -25,6 +27,7 @@ export function EntityPanel({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [tileFilter, setTileFilter] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [castMemberId, setCastMemberId] = useState('');
 
   const iconOptions = useMemo(() => {
     const needle = tileFilter.trim().toLowerCase();
@@ -39,6 +42,10 @@ export function EntityPanel({
   const playerEntities = useMemo(() => {
     return entities.filter((entity) => entity.type === 'player');
   }, [entities]);
+  const castOptions = useMemo(() => {
+    return campaignCast.filter((entry) => entry.castType === 'npc' || entry.castType === 'monster');
+  }, [campaignCast]);
+  const selectedCastMember = castOptions.find((entry) => String(entry.id) === String(castMemberId));
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -81,6 +88,35 @@ export function EntityPanel({
       </div>
 
       {canCreateEntities && (
+      <>
+      {canManageEntities && !!castOptions.length && (
+        <div className="entity-form cast-entity-form">
+          <strong>Add from Cast</strong>
+          <select
+            value={castMemberId}
+            onChange={(event) => setCastMemberId(event.target.value)}
+            aria-label="Cast member to add to map"
+          >
+            <option value="">Choose NPC or monster</option>
+            {castOptions.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.name} ({entry.castType === 'npc' ? 'NPC' : 'Monster'})
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={!selectedCastMember}
+            onClick={() => {
+              if (!selectedCastMember) return;
+              onAddCastMember?.(selectedCastMember);
+              setCastMemberId('');
+            }}
+          >
+            Add cast member
+          </button>
+        </div>
+      )}
       <form className="entity-form" onSubmit={handleSubmit}>
         <strong>{canManageEntities ? 'Add Entity' : 'Add Player Entity'}</strong>
         {canManageEntities && (
@@ -145,6 +181,7 @@ export function EntityPanel({
         <input type="file" accept="image/*" onChange={handleDraftFile} />
         <button type="submit">{canManageEntities ? 'Add entity' : 'Add player'}</button>
       </form>
+      </>
       )}
 
       {pickerOpen && (
@@ -205,6 +242,7 @@ export function EntityPanel({
             playerEntities={playerEntities}
             canManageEntities={canManageEntities}
             canEdit={canEditEntity?.(entity) ?? false}
+            canSeeGm={canManageEntities}
           />
         ))}
       </div>
@@ -253,7 +291,8 @@ function EntityRow({
   onDelete,
   playerEntities,
   canManageEntities,
-  canEdit
+  canEdit,
+  canSeeGm
 }) {
   const owner = playerEntities.find((player) => player.id === entity.ownerId);
 
@@ -313,6 +352,45 @@ function EntityRow({
         </button>
         )}
       </div>
+      {selected && <EntityCombatDetails entity={entity} canSeeGm={canSeeGm} />}
+    </div>
+  );
+}
+
+function EntityCombatDetails({ entity, canSeeGm }) {
+  const hasDetails = (
+    entity.combatStatsPublic ||
+    entity.statusEffectsPublic ||
+    (canSeeGm && (entity.combatStatsGm || entity.statusEffectsGm))
+  );
+  if (!hasDetails || entity.type !== 'mob') return null;
+
+  return (
+    <div className="entity-combat-details">
+      {entity.combatStatsPublic && (
+        <section>
+          <strong>Combat Stats</strong>
+          <p>{entity.combatStatsPublic}</p>
+        </section>
+      )}
+      {entity.statusEffectsPublic && (
+        <section>
+          <strong>Status Effects</strong>
+          <p>{entity.statusEffectsPublic}</p>
+        </section>
+      )}
+      {canSeeGm && entity.combatStatsGm && (
+        <section>
+          <strong>GM Combat Stats</strong>
+          <p>{entity.combatStatsGm}</p>
+        </section>
+      )}
+      {canSeeGm && entity.statusEffectsGm && (
+        <section>
+          <strong>GM Status Effects</strong>
+          <p>{entity.statusEffectsGm}</p>
+        </section>
+      )}
     </div>
   );
 }

@@ -557,6 +557,11 @@ select {
   gap: 6px;
 }
 
+.cast-combat-fields {
+  display: grid;
+  gap: 6px;
+}
+
 .cast-panel-actions {
   display: flex;
   justify-content: flex-end;
@@ -1688,6 +1693,10 @@ select {
   border-bottom: 1px solid #e2e8f0;
 }
 
+.cast-entity-form {
+  background: #f8fafc;
+}
+
 .entity-hp-row,
 .entity-row-controls {
   display: grid;
@@ -1765,6 +1774,31 @@ select {
 
 .entity-row-controls button {
   padding: 6px 8px;
+}
+
+.entity-combat-details {
+  display: grid;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.entity-combat-details section {
+  display: grid;
+  gap: 2px;
+}
+
+.entity-combat-details strong {
+  color: #334155;
+  font-size: 11px;
+}
+
+.entity-combat-details p {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: pre-wrap;
 }
 
 .modal-backdrop {

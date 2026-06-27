@@ -403,6 +403,11 @@ function App() {
   }, [centerTab, activeMap?.id, activeMap?.campaignId]);
 
   useEffect(() => {
+    if (!activeMap?.campaignId || !permissions.canManageEntities) return;
+    refreshCampaignCast(activeMap.campaignId);
+  }, [activeMap?.campaignId, permissions.canManageEntities]);
+
+  useEffect(() => {
     scrollThreadToUnreadOrBottom(forumPageThread);
   }, [forumPageThread?.id, forumPageThread?.firstUnreadPostId, forumPageThread?.posts?.length]);
 
@@ -846,6 +851,12 @@ function App() {
         portraitUrl: draft.portraitUrl || '',
         publicDescription: draft.publicDescription || '',
         gmNotes: draft.gmNotes || '',
+        combatStatsPublic: draft.combatStatsPublic || '',
+        combatStatsGm: draft.combatStatsGm || '',
+        statusEffectsPublic: draft.statusEffectsPublic || '',
+        statusEffectsGm: draft.statusEffectsGm || '',
+        currentHealth: draft.currentHealth || '',
+        maxHealth: draft.maxHealth || '',
         visibleToPlayers: draft.visibleToPlayers !== false
       });
       setCampaignCast((current) => ({ ...current, [campaign.id]: data.cast }));
@@ -875,6 +886,12 @@ function App() {
         portraitUrl: draft.portraitUrl || '',
         publicDescription: draft.publicDescription || '',
         gmNotes: draft.gmNotes || '',
+        combatStatsPublic: draft.combatStatsPublic || '',
+        combatStatsGm: draft.combatStatsGm || '',
+        statusEffectsPublic: draft.statusEffectsPublic || '',
+        statusEffectsGm: draft.statusEffectsGm || '',
+        currentHealth: draft.currentHealth || '',
+        maxHealth: draft.maxHealth || '',
         visibleToPlayers: draft.visibleToPlayers !== false
       });
       setCampaignCast((current) => ({ ...current, [campaignId]: data.cast }));
@@ -940,6 +957,15 @@ function App() {
     try {
       const data = await listForumThreads(campaignId);
       setCampaignForumThreads((current) => ({ ...current, [campaignId]: data.threads }));
+      if (data.campaign) {
+        setCampaigns((current) => {
+          const exists = current.some((campaign) => Number(campaign.id) === Number(data.campaign.id));
+          return exists
+            ? current.map((campaign) => (Number(campaign.id) === Number(data.campaign.id) ? data.campaign : campaign))
+            : [data.campaign, ...current];
+        });
+      }
+      setError('');
     } catch (err) {
       showError(err);
     }
@@ -1703,6 +1729,29 @@ function App() {
     } catch (err) {
       showError(err);
     }
+  }
+
+  async function handleAddCastEntityToMap(entry) {
+    const maxHp = Math.max(1, parseHealthNumber(entry.maxHealth, 10));
+    const hp = Math.min(maxHp, parseHealthNumber(entry.currentHealth, maxHp));
+    await handleAddEntity({
+      type: 'mob',
+      name: entry.name,
+      image: entry.portraitUrl || '',
+      hp,
+      maxHp,
+      combatStatsPublic: entry.combatStatsPublic || '',
+      combatStatsGm: entry.combatStatsGm || '',
+      statusEffectsPublic: entry.statusEffectsPublic || '',
+      statusEffectsGm: entry.statusEffectsGm || '',
+      currentHealthText: entry.currentHealth || String(hp),
+      maxHealthText: entry.maxHealth || String(maxHp),
+      source: {
+        type: 'campaign-cast',
+        castId: entry.id,
+        castType: entry.castType
+      }
+    });
   }
 
   function handleUpdateEntity(id, patch) {
@@ -2481,6 +2530,10 @@ function App() {
                 onMeasure={handleMeasure}
                 onPlaceEntity={handlePlaceEntity}
                 onMoveEntity={handlePlaceEntity}
+                onSelectEntity={(id) => {
+                  setSelectedEntityId(id);
+                  setRightTab('entities');
+                }}
               />
             </>
           ) : (
@@ -2546,10 +2599,12 @@ function App() {
                 entities={entities}
                 selectedEntityId={selectedEntityId}
                 tiles={tiles}
+                campaignCast={activeMap?.campaignId ? campaignCast[activeMap.campaignId] || [] : []}
                 canManageEntities={permissions.canManageEntities}
                 canCreateEntities={permissions.canCreateEntities}
                 canEditEntity={(entity) => canControlEntity(entity, entities, viewerUserId, permissions)}
                 onAdd={handleAddEntity}
+                onAddCastMember={handleAddCastEntityToMap}
                 onUpdate={handleUpdateEntity}
                 onDelete={handleDeleteEntity}
                 onSelect={(id) => {
@@ -2744,6 +2799,12 @@ function canControlEntity(entity, entities, viewerUserId, permissions) {
 
 function isEntityPatch(patch) {
   return Object.keys(patch).every((key) => ['hp', 'maxHp', 'x', 'y'].includes(key));
+}
+
+function parseHealthNumber(value, fallback) {
+  const match = String(value || '').match(/\d+/);
+  const number = match ? Number(match[0]) : Number(fallback);
+  return Number.isFinite(number) ? Math.max(0, Math.round(number)) : fallback;
 }
 
 async function getRecaptchaToken(config, widgetId, action = config.recaptchaAction || 'register') {
@@ -3619,6 +3680,12 @@ function CastCreateModal({ campaign, draft, onDraftChange, onPortraitFile, onCre
             onDraftChange={onDraftChange}
             onPortraitFile={onPortraitFile}
           />
+          <CastCombatFields
+            campaignId={campaign.id}
+            entryId="new"
+            draft={draft}
+            onDraftChange={onDraftChange}
+          />
           <textarea
             value={draft.publicDescription || ''}
             onChange={(event) => onDraftChange(campaign.id, 'new', { publicDescription: event.target.value })}
@@ -3701,6 +3768,14 @@ function CastEntryEditor({ campaign, entry, draft, onDraftChange, onPortraitFile
                   Show to players
                 </label>
               )}
+              {entry.castType !== 'player' && (
+                <CastCombatFields
+                  campaignId={campaign.id}
+                  entryId={entry.id}
+                  draft={draft}
+                  onDraftChange={onDraftChange}
+                />
+              )}
               <textarea
                 value={draft.publicDescription || ''}
                 onChange={(event) => onDraftChange(campaign.id, entry.id, { publicDescription: event.target.value })}
@@ -3727,6 +3802,52 @@ function CastEntryEditor({ campaign, entry, draft, onDraftChange, onPortraitFile
         </section>
       </section>
     </div>
+  );
+}
+
+function CastCombatFields({ campaignId, entryId, draft, onDraftChange }) {
+  return (
+    <section className="cast-combat-fields">
+      <div className="entity-hp-row">
+        <input
+          value={draft.currentHealth || ''}
+          onChange={(event) => onDraftChange(campaignId, entryId, { currentHealth: event.target.value })}
+          placeholder="Current health"
+          aria-label="Current health"
+        />
+        <span>/</span>
+        <input
+          value={draft.maxHealth || ''}
+          onChange={(event) => onDraftChange(campaignId, entryId, { maxHealth: event.target.value })}
+          placeholder="Max health"
+          aria-label="Maximum health"
+        />
+      </div>
+      <textarea
+        value={draft.combatStatsPublic || ''}
+        onChange={(event) => onDraftChange(campaignId, entryId, { combatStatsPublic: event.target.value })}
+        placeholder="Combat stats visible to players"
+        rows={3}
+      />
+      <textarea
+        value={draft.combatStatsGm || ''}
+        onChange={(event) => onDraftChange(campaignId, entryId, { combatStatsGm: event.target.value })}
+        placeholder="GM-only combat stats"
+        rows={3}
+      />
+      <textarea
+        value={draft.statusEffectsPublic || ''}
+        onChange={(event) => onDraftChange(campaignId, entryId, { statusEffectsPublic: event.target.value })}
+        placeholder="Status effects visible to players"
+        rows={3}
+      />
+      <textarea
+        value={draft.statusEffectsGm || ''}
+        onChange={(event) => onDraftChange(campaignId, entryId, { statusEffectsGm: event.target.value })}
+        placeholder="GM-only status effects"
+        rows={3}
+      />
+    </section>
   );
 }
 
@@ -4068,6 +4189,11 @@ function ForumPage({
   useEffect(() => {
     setPostPage(initialThreadPostPage(selectedThread, postPageSize));
   }, [selectedThread?.id, postPageSize]);
+
+  useEffect(() => {
+    if (selectedThread || !threads.length) return;
+    onSelectThread(threads[0].id);
+  }, [selectedThread?.id, threads]);
 
   useEffect(() => {
     window.requestAnimationFrame(() => scrollThreadToUnreadOrBottom(selectedThread));

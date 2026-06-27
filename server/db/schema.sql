@@ -139,6 +139,12 @@ CREATE TABLE IF NOT EXISTS campaign_cast (
   portrait_url LONGTEXT NULL,
   public_description LONGTEXT NOT NULL,
   gm_notes LONGTEXT NOT NULL,
+  combat_stats_public LONGTEXT NOT NULL,
+  combat_stats_gm LONGTEXT NOT NULL,
+  status_effects_public LONGTEXT NOT NULL,
+  status_effects_gm LONGTEXT NOT NULL,
+  current_health VARCHAR(80) NOT NULL DEFAULT '',
+  max_health VARCHAR(80) NOT NULL DEFAULT '',
   visible_to_players BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -153,7 +159,13 @@ CREATE TABLE IF NOT EXISTS campaign_cast (
 ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS portrait_url LONGTEXT NULL AFTER name;
 ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS public_description LONGTEXT NOT NULL AFTER portrait_url;
 ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS gm_notes LONGTEXT NOT NULL AFTER public_description;
-ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS visible_to_players BOOLEAN NOT NULL DEFAULT TRUE AFTER gm_notes;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS combat_stats_public LONGTEXT NOT NULL AFTER gm_notes;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS combat_stats_gm LONGTEXT NOT NULL AFTER combat_stats_public;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS status_effects_public LONGTEXT NOT NULL AFTER combat_stats_gm;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS status_effects_gm LONGTEXT NOT NULL AFTER status_effects_public;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS current_health VARCHAR(80) NOT NULL DEFAULT '' AFTER status_effects_gm;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS max_health VARCHAR(80) NOT NULL DEFAULT '' AFTER current_health;
+ALTER TABLE campaign_cast ADD COLUMN IF NOT EXISTS visible_to_players BOOLEAN NOT NULL DEFAULT TRUE AFTER max_health;
 
 CREATE TABLE IF NOT EXISTS map_campaign_invites (
   map_id BIGINT UNSIGNED NOT NULL,

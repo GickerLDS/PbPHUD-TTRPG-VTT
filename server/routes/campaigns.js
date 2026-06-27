@@ -47,6 +47,12 @@ const castSchema = z.object({
   portraitUrl: z.string().trim().max(900000).optional().default(''),
   publicDescription: z.string().trim().max(12000).optional().default(''),
   gmNotes: z.string().trim().max(12000).optional().default(''),
+  combatStatsPublic: z.string().trim().max(12000).optional().default(''),
+  combatStatsGm: z.string().trim().max(12000).optional().default(''),
+  statusEffectsPublic: z.string().trim().max(12000).optional().default(''),
+  statusEffectsGm: z.string().trim().max(12000).optional().default(''),
+  currentHealth: z.string().trim().max(80).optional().default(''),
+  maxHealth: z.string().trim().max(80).optional().default(''),
   visibleToPlayers: z.boolean().optional().default(true)
 });
 
@@ -55,6 +61,12 @@ const castUpdateSchema = z.object({
   portraitUrl: z.string().trim().max(900000).optional(),
   publicDescription: z.string().trim().max(12000).optional(),
   gmNotes: z.string().trim().max(12000).optional(),
+  combatStatsPublic: z.string().trim().max(12000).optional(),
+  combatStatsGm: z.string().trim().max(12000).optional(),
+  statusEffectsPublic: z.string().trim().max(12000).optional(),
+  statusEffectsGm: z.string().trim().max(12000).optional(),
+  currentHealth: z.string().trim().max(80).optional(),
+  maxHealth: z.string().trim().max(80).optional(),
   visibleToPlayers: z.boolean().optional()
 });
 
@@ -563,9 +575,11 @@ campaignsRouter.post('/:campaignId/cast', async (req, res, next) => {
     const result = await query(
       `INSERT INTO campaign_cast (
          campaign_id, cast_type, owner_user_id, name, portrait_url,
-         public_description, gm_notes, visible_to_players
+         public_description, gm_notes, combat_stats_public, combat_stats_gm,
+         status_effects_public, status_effects_gm, current_health, max_health,
+         visible_to_players
        )
-       VALUES (?, ?, NULL, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         campaign.id,
         body.castType,
@@ -573,6 +587,12 @@ campaignsRouter.post('/:campaignId/cast', async (req, res, next) => {
         portraitUrl,
         body.publicDescription,
         body.gmNotes,
+        body.combatStatsPublic,
+        body.combatStatsGm,
+        body.statusEffectsPublic,
+        body.statusEffectsGm,
+        body.currentHealth,
+        body.maxHealth,
         body.visibleToPlayers
       ]
     );
@@ -617,6 +637,14 @@ campaignsRouter.patch('/:campaignId/cast/:castId', async (req, res, next) => {
     if (body.portraitUrl !== undefined) patch.portrait_url = normalizePortraitUrl(body.portraitUrl);
     if (body.publicDescription !== undefined) patch.public_description = body.publicDescription;
     if (body.gmNotes !== undefined) patch.gm_notes = body.gmNotes;
+    if (isOwner && castEntry.cast_type !== 'player') {
+      if (body.combatStatsPublic !== undefined) patch.combat_stats_public = body.combatStatsPublic;
+      if (body.combatStatsGm !== undefined) patch.combat_stats_gm = body.combatStatsGm;
+      if (body.statusEffectsPublic !== undefined) patch.status_effects_public = body.statusEffectsPublic;
+      if (body.statusEffectsGm !== undefined) patch.status_effects_gm = body.statusEffectsGm;
+      if (body.currentHealth !== undefined) patch.current_health = body.currentHealth;
+      if (body.maxHealth !== undefined) patch.max_health = body.maxHealth;
+    }
     if (isOwner && castEntry.cast_type !== 'player' && body.visibleToPlayers !== undefined) {
       patch.visible_to_players = body.visibleToPlayers;
     }
@@ -710,7 +738,7 @@ campaignsRouter.post('/:campaignId/maps', async (req, res, next) => {
 
 campaignsRouter.get('/:campaignId/forum/threads', async (req, res, next) => {
   try {
-    const viewerUserId = userPublicId(req.user);
+    const viewerUserId = viewerPublicIdFromRequest(req);
     const access = await loadCampaignForumAccessByViewerUserId(req.params.campaignId, viewerUserId);
     const campaign = access?.campaign;
     if (!access || !campaign) {
@@ -788,7 +816,10 @@ campaignsRouter.get('/:campaignId/forum/threads', async (req, res, next) => {
       [access.viewerUserId, access.viewerUserId, campaign.id, mapId, mapId, access.isOwner, access.isMember]
     );
 
-    res.json({ threads: rows.map((row) => formatThreadSummary(row, threadPermissions(row.visibilityLevel, access))) });
+    res.json({
+      campaign: await loadCampaignSummary(campaign.id, viewerUserId),
+      threads: rows.map((row) => formatThreadSummary(row, threadPermissions(row.visibilityLevel, access)))
+    });
   } catch (error) {
     next(error);
   }
@@ -858,7 +889,8 @@ campaignsRouter.post('/:campaignId/forum/threads', async (req, res, next) => {
 
 campaignsRouter.get('/:campaignId/forum/threads/:threadId', async (req, res, next) => {
   try {
-    const access = await loadCampaignForumAccess(req.params.campaignId, req.user);
+    const viewerUserId = viewerPublicIdFromRequest(req);
+    const access = await loadCampaignForumAccessByViewerUserId(req.params.campaignId, viewerUserId);
     const campaign = access?.campaign;
     if (!campaign) {
       res.status(404).json({ error: 'Campaign not found' });
@@ -1496,9 +1528,11 @@ async function ensureCampaignPlayerCastEntries(campaignId, ownerUserId) {
     await query(
       `INSERT INTO campaign_cast (
          campaign_id, cast_type, owner_user_id, name, portrait_url,
-         public_description, gm_notes, visible_to_players
+         public_description, gm_notes, combat_stats_public, combat_stats_gm,
+         status_effects_public, status_effects_gm, current_health, max_health,
+         visible_to_players
        )
-       VALUES (?, 'player', ?, ?, '', '', '', TRUE)`,
+       VALUES (?, 'player', ?, ?, '', '', '', '', '', '', '', '', '', TRUE)`,
       [campaignId, userId, displayNames.get(userId) || userId]
     );
   }
@@ -1515,6 +1549,12 @@ async function loadCampaignCast(campaignId, viewerUserId, isOwner, ownerUserId =
        portrait_url AS portraitUrl,
        public_description AS publicDescription,
        gm_notes AS gmNotes,
+       combat_stats_public AS combatStatsPublic,
+       combat_stats_gm AS combatStatsGm,
+       status_effects_public AS statusEffectsPublic,
+       status_effects_gm AS statusEffectsGm,
+       current_health AS currentHealth,
+       max_health AS maxHealth,
        visible_to_players AS visibleToPlayers,
        created_at AS createdAt,
        updated_at AS updatedAt
@@ -1539,6 +1579,12 @@ async function loadCampaignCast(campaignId, viewerUserId, isOwner, ownerUserId =
       portraitUrl: row.portraitUrl || '',
       publicDescription: row.publicDescription || '',
       gmNotes: canSeeGmNotes ? row.gmNotes || '' : '',
+      combatStatsPublic: row.combatStatsPublic || '',
+      combatStatsGm: canSeeGmNotes ? row.combatStatsGm || '' : '',
+      statusEffectsPublic: row.statusEffectsPublic || '',
+      statusEffectsGm: canSeeGmNotes ? row.statusEffectsGm || '' : '',
+      currentHealth: row.currentHealth || '',
+      maxHealth: row.maxHealth || '',
       visibleToPlayers: Boolean(row.visibleToPlayers),
       canEdit,
       canDelete: isOwner && row.castType !== 'player',
@@ -2216,6 +2262,13 @@ function formatThreadSummary(row, permissions = null) {
 
 function userPublicId(user) {
   return user?.id ? `user:${user.id}` : '';
+}
+
+function viewerPublicIdFromRequest(req) {
+  if (req.user?.id) return userPublicId(req.user);
+  const viewerUserId = String(req.get('X-PBPHUD-Viewer-Id') || '').trim();
+  if (!viewerUserId) return '';
+  return viewerUserId.startsWith('user:') ? viewerUserId : `user:${viewerUserId}`;
 }
 
 function normalizeForumThreadVisibility(visibilityLevel) {

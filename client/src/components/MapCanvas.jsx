@@ -22,7 +22,8 @@ export function MapCanvas({
   onAddDrawing,
   onMeasure,
   onPlaceEntity,
-  onMoveEntity
+  onMoveEntity,
+  onSelectEntity
 }) {
   const shellRef = useRef(null);
   const canvasRef = useRef(null);
@@ -149,6 +150,7 @@ export function MapCanvas({
     if (requestedTool === 'entity') {
       const entityAtCell = getEntityAtCell(entities, point.cell.x, point.cell.y);
       if (entityAtCell) {
+        onSelectEntity?.(entityAtCell.id);
         dragRef.current = {
           type: 'entity-move',
           pointerId: event.pointerId,
