@@ -12,7 +12,7 @@ export async function subscribeUserToAccessibleForumThreads(userPublicId) {
       AND member.user_id = ?
      WHERE campaign.owner_user_id = ?
         OR member.user_id IS NOT NULL
-     ON DUPLICATE KEY UPDATE updated_at = updated_at`,
+     ON DUPLICATE KEY UPDATE updated_at = campaign_forum_thread_subscriptions.updated_at`,
     [userPublicId, userPublicId, userPublicId]
   );
   return Number(result.affectedRows || 0);
@@ -35,7 +35,7 @@ export async function subscribeUserToCampaignThreadsIfEnabled(campaignId, userPu
      SELECT id, ?, FALSE
      FROM campaign_forum_threads
      WHERE campaign_id = ?
-     ON DUPLICATE KEY UPDATE updated_at = updated_at`,
+     ON DUPLICATE KEY UPDATE updated_at = campaign_forum_thread_subscriptions.updated_at`,
     [userPublicId, campaignId]
   );
   return Number(result.affectedRows || 0);
@@ -56,7 +56,7 @@ export async function subscribeAutoSubscribersToForumThread(campaignId, threadId
          campaign.owner_user_id = CONCAT('user:', users.id)
          OR member.user_id IS NOT NULL
        )
-     ON DUPLICATE KEY UPDATE updated_at = updated_at`,
+     ON DUPLICATE KEY UPDATE updated_at = campaign_forum_thread_subscriptions.updated_at`,
     [threadId, campaignId]
   );
   return Number(result.affectedRows || 0);

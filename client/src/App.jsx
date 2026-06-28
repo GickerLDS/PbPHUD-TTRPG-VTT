@@ -746,6 +746,7 @@ function App() {
       const data = await updateCampaignRecruitment(campaign.id, {
         gameDescription: draft.gameDescription || '',
         recruitmentInfo: draft.recruitmentInfo || '',
+        maxPlayers: parseMaxPlayers(draft.maxPlayers),
         recruitmentListed: Boolean(draft.recruitmentListed),
         allowLurkers: Boolean(draft.allowLurkers)
       });
@@ -813,6 +814,7 @@ function App() {
         [campaign.id]: {
           gameDescription: campaign.gameDescription || '',
           recruitmentInfo: campaign.recruitmentInfo || '',
+          maxPlayers: campaign.maxPlayers ?? '',
           recruitmentListed: Boolean(campaign.recruitmentListed),
           allowLurkers: Boolean(campaign.allowLurkers)
         }
@@ -2640,6 +2642,14 @@ function parseGridDimension(value, fallback = null) {
   return Math.max(5, Math.min(99, Math.trunc(number)));
 }
 
+function parseMaxPlayers(value) {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return null;
+  const number = Number(trimmed);
+  if (!Number.isFinite(number)) return null;
+  return Math.max(1, Math.min(999, Math.trunc(number)));
+}
+
 function formatMapVisibility(visibilityLevel) {
   return MAP_VISIBILITY_LEVELS.find((level) => level.value === visibilityLevel)?.label || 'Hidden';
 }
@@ -3031,7 +3041,7 @@ function GamesListPage({
                 <div>
                   <h3>{campaign.name}</h3>
                   <p>
-                    {campaign.ownerDisplayName} · {formatCount(campaign.playerCount, 'player')} · {formatCount(campaign.lurkerCount, 'lurker')}
+                    {campaign.ownerDisplayName} · {formatPlayerCapacity(campaign.playerCount, campaign.maxPlayers)} · {formatCount(campaign.lurkerCount, 'lurker')}
                   </p>
                 </div>
                 <div className="button-row campaign-action-buttons smaller-button-text">
@@ -3201,6 +3211,18 @@ function DashboardCampaignModal({
                 onChange={(event) => onRecruitmentDraftChange({ recruitmentInfo: event.target.value })}
                 placeholder="Say what roles, characters, posting pace, or player expectations you are looking for."
                 rows={5}
+              />
+            </label>
+            <label>
+              <span>Max # of players</span>
+              <input
+                type="number"
+                min="1"
+                max="999"
+                inputMode="numeric"
+                value={recruitmentDraft.maxPlayers ?? ''}
+                onChange={(event) => onRecruitmentDraftChange({ maxPlayers: event.target.value })}
+                placeholder="Open"
               />
             </label>
             <div className="recruitment-options">
@@ -4507,6 +4529,15 @@ function ThreadAuthorMeta({ thread }) {
 function formatCount(value, noun) {
   const count = Number(value || 0);
   return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+function formatPlayerCapacity(playerCount, maxPlayers) {
+  const currentCount = Number(playerCount || 0);
+  const maxCount = Number(maxPlayers);
+  const maxText = Number.isFinite(maxCount) && maxCount > 0
+    ? maxCount.toLocaleString()
+    : 'Open';
+  return `Players: ${currentCount.toLocaleString()} / ${maxText}`;
 }
 
 function paginateItems(items, page, pageSize) {

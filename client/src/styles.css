@@ -240,6 +240,10 @@ select {
   resize: vertical;
 }
 
+.recruitment-modal-body input {
+  width: min(220px, 100%);
+}
+
 .recruitment-options {
   display: flex;
   flex-wrap: wrap;

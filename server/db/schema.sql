@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   owner_user_id VARCHAR(191) NOT NULL,
   game_description LONGTEXT NOT NULL,
   recruitment_info LONGTEXT NOT NULL,
+  max_players SMALLINT UNSIGNED NULL,
   recruitment_listed BOOLEAN NOT NULL DEFAULT FALSE,
   allow_lurkers BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -92,7 +93,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
 
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS game_description LONGTEXT NOT NULL AFTER owner_user_id;
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS recruitment_info LONGTEXT NOT NULL AFTER game_description;
-ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS recruitment_listed BOOLEAN NOT NULL DEFAULT FALSE AFTER recruitment_info;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS max_players SMALLINT UNSIGNED NULL AFTER recruitment_info;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS recruitment_listed BOOLEAN NOT NULL DEFAULT FALSE AFTER max_players;
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS allow_lurkers BOOLEAN NOT NULL DEFAULT FALSE AFTER recruitment_listed;
 ALTER TABLE campaigns ADD INDEX IF NOT EXISTS idx_campaigns_recruitment (recruitment_listed, allow_lurkers);
 

@@ -24,6 +24,11 @@ const campaignSchema = z.object({
 const recruitmentSchema = z.object({
   gameDescription: z.string().trim().max(20000).optional().default(''),
   recruitmentInfo: z.string().trim().max(20000).optional().default(''),
+  maxPlayers: z.preprocess((value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : value;
+  }, z.number().int().min(1).max(999).nullable().optional().default(null)),
   recruitmentListed: z.boolean().optional().default(false),
   allowLurkers: z.boolean().optional().default(false)
 });
@@ -143,6 +148,7 @@ campaignsRouter.get('/recruiting', async (req, res, next) => {
          campaigns.name,
          campaigns.game_description AS gameDescription,
          campaigns.recruitment_info AS recruitmentInfo,
+         campaigns.max_players AS maxPlayers,
          campaigns.recruitment_listed AS recruitmentListed,
          campaigns.allow_lurkers AS allowLurkers,
          owner.display_name AS ownerDisplayName,
@@ -167,6 +173,7 @@ campaignsRouter.get('/recruiting', async (req, res, next) => {
          campaigns.name,
          campaigns.game_description,
          campaigns.recruitment_info,
+         campaigns.max_players,
          campaigns.recruitment_listed,
          campaigns.allow_lurkers,
          owner.display_name,
@@ -179,6 +186,7 @@ campaignsRouter.get('/recruiting', async (req, res, next) => {
         name: row.name,
         gameDescription: row.gameDescription || '',
         recruitmentInfo: row.recruitmentInfo || '',
+        maxPlayers: row.maxPlayers == null ? null : Number(row.maxPlayers),
         recruitmentListed: Boolean(row.recruitmentListed),
         allowLurkers: Boolean(row.allowLurkers),
         ownerDisplayName: row.ownerDisplayName || row.ownerEmail || 'Campaign GM',
@@ -214,6 +222,7 @@ campaignsRouter.get('/', async (req, res, next) => {
        campaigns.owner_user_id AS ownerUserId,
        campaigns.game_description AS gameDescription,
        campaigns.recruitment_info AS recruitmentInfo,
+       campaigns.max_players AS maxPlayers,
        campaigns.recruitment_listed AS recruitmentListed,
        campaigns.allow_lurkers AS allowLurkers,
        member.user_id AS memberUserId,
@@ -232,6 +241,7 @@ campaignsRouter.get('/', async (req, res, next) => {
          campaigns.owner_user_id,
          campaigns.game_description,
          campaigns.recruitment_info,
+         campaigns.max_players,
          campaigns.recruitment_listed,
          campaigns.allow_lurkers,
          member.user_id,
@@ -247,6 +257,7 @@ campaignsRouter.get('/', async (req, res, next) => {
       role: row.ownerUserId === viewerUserId ? 'owner' : row.memberRole === 'lurker' ? 'lurker' : 'member',
       gameDescription: row.gameDescription || '',
       recruitmentInfo: row.recruitmentInfo || '',
+      maxPlayers: row.maxPlayers == null ? null : Number(row.maxPlayers),
       recruitmentListed: Boolean(row.recruitmentListed),
       allowLurkers: Boolean(row.allowLurkers),
       mapCount: Number(row.mapCount),
@@ -281,6 +292,7 @@ campaignsRouter.post('/', async (req, res, next) => {
         role: 'owner',
         gameDescription: '',
         recruitmentInfo: '',
+        maxPlayers: null,
         recruitmentListed: false,
         allowLurkers: false,
         mapCount: 0,
@@ -330,12 +342,14 @@ campaignsRouter.patch('/:campaignId/recruitment', async (req, res, next) => {
       `UPDATE campaigns
        SET game_description = ?,
            recruitment_info = ?,
+           max_players = ?,
            recruitment_listed = ?,
            allow_lurkers = ?
        WHERE id = ?`,
       [
         body.gameDescription,
         body.recruitmentInfo,
+        body.maxPlayers,
         body.recruitmentListed,
         body.allowLurkers,
         campaign.id
@@ -1403,6 +1417,7 @@ async function loadCampaignSummary(campaignId, viewerUserId) {
        campaigns.owner_user_id AS ownerUserId,
        campaigns.game_description AS gameDescription,
        campaigns.recruitment_info AS recruitmentInfo,
+       campaigns.max_players AS maxPlayers,
        campaigns.recruitment_listed AS recruitmentListed,
        campaigns.allow_lurkers AS allowLurkers,
        member.user_id AS memberUserId,
@@ -1421,6 +1436,7 @@ async function loadCampaignSummary(campaignId, viewerUserId) {
        campaigns.owner_user_id,
        campaigns.game_description,
        campaigns.recruitment_info,
+       campaigns.max_players,
        campaigns.recruitment_listed,
        campaigns.allow_lurkers,
        member.user_id,
@@ -1438,6 +1454,7 @@ async function loadCampaignSummary(campaignId, viewerUserId) {
     role: isOwner ? 'owner' : row.memberRole === 'lurker' ? 'lurker' : 'member',
     gameDescription: row.gameDescription || '',
     recruitmentInfo: row.recruitmentInfo || '',
+    maxPlayers: row.maxPlayers == null ? null : Number(row.maxPlayers),
     recruitmentListed: Boolean(row.recruitmentListed),
     allowLurkers: Boolean(row.allowLurkers),
     mapCount: Number(row.mapCount),
